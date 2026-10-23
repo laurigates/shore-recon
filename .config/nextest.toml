@@ -1,0 +1,7 @@
+[profile.default]
+# Integration tests that need external tools or a GPU are excluded by default.
+default-filter = "not test(/::integration::/)"
+
+[profile.integration]
+default-filter = "test(/::integration::/)"
+slow-timeout = { period = "300s", terminate-after = 6 }

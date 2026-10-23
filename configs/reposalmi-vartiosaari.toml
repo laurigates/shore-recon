@@ -1,0 +1,6 @@
+[dataset]
+name  = "reposalmi-vartiosaari"
+input = "data/raw/reposalmi-vartiosaari"
+
+[sfm]
+matcher = "exhaustive"
