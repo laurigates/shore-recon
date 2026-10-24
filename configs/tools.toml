@@ -1,0 +1,12 @@
+# How each external tool runs on this machine (ADR-0003). One table per tool.
+# A host-specific file passed with --tools or SHORELINE_TOOLS replaces whole
+# tables, so a GPU host can run COLMAP in a container and keep ffmpeg native.
+#
+#   runtime = "native" | "podman" | "docker"
+#   program = executable (native) or the command inside the image
+#   image   = OCI image pinned by digest (name@sha256:...), containers only
+#   gpu     = pass the host GPUs through, containers only (default false)
+
+[ffmpeg]
+runtime = "native"
+program = "ffmpeg"
