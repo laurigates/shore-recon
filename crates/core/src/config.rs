@@ -168,7 +168,7 @@ pub fn merge(base: &mut Table, overlay: Table) {
     }
 }
 
-fn read_table(path: &Path) -> Result<Table> {
+pub(crate) fn read_table(path: &Path) -> Result<Table> {
     let text = std::fs::read_to_string(path).map_err(|source| Error::Io {
         path: path.to_owned(),
         source,

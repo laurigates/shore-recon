@@ -22,4 +22,18 @@ pub enum Error {
     Dag(String),
     #[error("quality gate failed: {0}")]
     Gate(String),
+    #[error("tools config: {0}")]
+    Tools(String),
+    #[error("failed to start {program}: {source}")]
+    Spawn {
+        program: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("{tool} failed ({status}); see {log}")]
+    ToolFailed {
+        tool: String,
+        status: std::process::ExitStatus,
+        log: PathBuf,
+    },
 }

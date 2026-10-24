@@ -4,3 +4,4 @@
 /models
 *.onnx
 .env
+*.local.toml

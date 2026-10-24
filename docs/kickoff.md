@@ -142,6 +142,7 @@ pub trait Stage {
 - It can run a native binary or an OCI container (podman or docker).
 - It records tool version, arguments and logs, so stages do not repeat process handling.
 - Backends are selected in config. Each backend is a separate module behind the stage trait.
+- How each tool runs (native or container, image, GPU) is machine configuration in `tools.toml`, not dataset configuration: [ADR-0003](adr/0003-tool-runtimes-are-machine-config.md).
 
 ### Caching
 

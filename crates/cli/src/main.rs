@@ -2,12 +2,15 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use shoreline_core::{Config, dag};
+use shoreline_core::{Config, Tools, dag};
 
 /// Water-aware photogrammetry and Gaussian splatting pipeline.
 #[derive(Debug, Parser)]
 #[command(version)]
 struct Cli {
+    /// Host tools file; its tables replace those of tools.toml beside the config.
+    #[arg(long, global = true, env = "SHORELINE_TOOLS")]
+    tools: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
 }
@@ -20,6 +23,8 @@ enum Command {
     Config { config: PathBuf },
     /// Print the stage execution order.
     Plan { config: PathBuf },
+    /// Print the resolved tools (tools.toml beside the config, then --tools).
+    Tools { config: PathBuf },
 }
 
 fn load(path: &Path) -> Result<Config> {
@@ -27,7 +32,8 @@ fn load(path: &Path) -> Result<Config> {
 }
 
 fn main() -> Result<()> {
-    match Cli::parse().command {
+    let cli = Cli::parse();
+    match cli.command {
         Command::Config { config } => {
             print!("{}", toml::to_string_pretty(&load(&config)?)?);
         }
@@ -36,6 +42,11 @@ fn main() -> Result<()> {
             for (i, stage) in dag::topo_order(dag::PIPELINE)?.iter().enumerate() {
                 println!("{} {stage}", i + 1);
             }
+        }
+        Command::Tools { config } => {
+            let tools = Tools::load(&config, cli.tools.as_deref())
+                .with_context(|| format!("loading tools for {}", config.display()))?;
+            print!("{}", toml::to_string_pretty(&tools)?);
         }
         Command::Run { config } => {
             load(&config)?;

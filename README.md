@@ -13,8 +13,8 @@ Design and milestones: [docs/kickoff.md](docs/kickoff.md). Decisions:
 ## Status
 
 M1 in progress. Implemented: config loading and merging, stage DAG,
-fingerprinting, `Stage` trait, mask path convention. Stages are not yet
-executable.
+fingerprinting, `Stage` trait, mask path convention, tool runner (native,
+podman, docker). Stages are not yet executable.
 
 The M0 spike ran end to end with the scripts in [`spike/m0/`](spike/m0/README.md),
 driven by `just` (GPU recipes need a CUDA host: see `.env.example`). Findings:
@@ -25,21 +25,26 @@ driven by `just` (GPU recipes need a CUDA host: see `.env.example`). Findings:
 ```sh
 cargo run -- config configs/reposalmi-laajasalo.toml   # resolved config
 cargo run -- plan   configs/reposalmi-laajasalo.toml   # stage order
+cargo run -- tools  configs/reposalmi-laajasalo.toml   # resolved tools
 cargo run -- run    configs/reposalmi-laajasalo.toml   # not implemented yet
 ```
 
 Dataset configs are deep-merged over `configs/defaults.toml` in the same
 directory. Unknown keys are rejected.
 
+How each external tool runs is machine configuration: `tools.toml` beside the
+dataset config, with whole tool tables replaced by a host file passed as
+`--tools <file>` or `SHORELINE_TOOLS` ([ADR-0003](docs/adr/0003-tool-runtimes-are-machine-config.md)).
+
 ## Layout
 
 ```
 crates/
   cli/      clap entrypoint (binary: shoreline-recon)
-  core/     config, DAG, fingerprint, Stage trait
+  core/     config, DAG, fingerprint, Stage trait, tool runner
   frames/   masks/   sfm/   dense/   splat/   post/
 containers/ Containerfiles, pinned versions
-configs/    defaults.toml + per-dataset overrides
+configs/    defaults.toml + per-dataset overrides, tools.toml
 docs/       kickoff, ADRs
 tests/fixtures/
 ```

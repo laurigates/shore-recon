@@ -1,0 +1,43 @@
+# 0003. Tool runtimes are machine configuration
+
+- Status: accepted
+- Date: 2026-10-24
+
+## Context
+
+Stages run external tools (ffmpeg, COLMAP, Brush, the segmentation backend) through one
+`ToolRunner` (kickoff § Tool execution). How a tool runs differs per machine, not per dataset:
+in M0, ffmpeg ran natively on the Mac, while the GPU host ran COLMAP from an OCI image under
+Apptainer, a static ffmpeg build and a Brush release binary (ADR-0002). Dataset configs are
+committed and must not name a host or its paths (`.claude/rules/remote-gpu-host.md`).
+
+## Decision
+
+1. Tool settings live in `tools.toml` beside the dataset config, as `defaults.toml` does, with
+   one table per tool: `runtime` (`native`, `podman` or `docker`), `program`, `image`, `gpu`.
+   The committed `configs/tools.toml` holds native defaults.
+2. A host file given with `--tools` or `SHORELINE_TOOLS` replaces whole tool tables. It is not
+   a deep merge, so switching a tool from a container to native does not inherit its `image`.
+3. Container images are pinned by digest (`name@sha256:…`). Loading rejects unknown keys, an
+   `image` or `gpu` on a native tool, and a container tool without an image.
+4. Containers bind-mount each directory an invocation names at the same path (`-v /p:/p`), so
+   arguments are host paths under every runtime. GPU passthrough is `--gpus all` for docker and
+   `--device nvidia.com/gpu=all` for podman (CDI, podman ≥ 4.1).
+5. Each run writes its command line, stdout and stderr to one log and returns a record (tool,
+   runtime, image, argv, duration, log) for the stage manifest. A non-zero exit is an error
+   naming the log.
+6. The tool version a stage passes to its fingerprint is the image reference for containers,
+   and for native tools the first stdout line of a probe the stage chooses (`ffmpeg -version`).
+
+## Consequences
+
+- Moving a run to another machine changes native tool versions and therefore fingerprints, so
+  cached outputs are not reused across hosts with different builds.
+- The runtime is not fingerprinted: the same image under docker or podman reuses the cache.
+- Apptainer, which the GPU host needs (ADR-0002, decision 5), is not yet a runtime; tracked in
+  #13.
+- Docker runs as root by default, so on Linux its bind-mounted outputs are root-owned; rootless
+  podman maps them to the invoking user. There is no `--user` mapping yet.
+- Paths containing `:` cannot be expressed in `-v` and are rejected.
+- Host tools files are not committed. Keep them outside the repository or name them
+  `*.local.toml`, which is git-ignored.
