@@ -16,6 +16,10 @@ M1 in progress. Implemented: config loading and merging, stage DAG,
 fingerprinting, `Stage` trait, mask path convention. Stages are not yet
 executable.
 
+The M0 spike ran end to end with the scripts in [`spike/m0/`](spike/m0/README.md),
+driven by `just` (GPU recipes need a CUDA host: see `.env.example`). Findings:
+[ADR-0002](docs/adr/0002-m0-spike-findings.md).
+
 ## Usage
 
 ```sh
