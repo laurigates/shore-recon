@@ -22,6 +22,8 @@ pub enum Error {
     Dag(String),
     #[error("quality gate failed: {0}")]
     Gate(String),
+    #[error("stage cache: {0}")]
+    Cache(String),
     #[error("tools config: {0}")]
     Tools(String),
     #[error("failed to start {program}: {source}")]

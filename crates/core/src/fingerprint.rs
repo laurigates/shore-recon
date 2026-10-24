@@ -5,8 +5,9 @@
 //! TOML files does not affect the result.
 
 use std::fmt;
+use std::str::FromStr;
 
-use serde::Serialize;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Fingerprint([u8; 32]);
@@ -40,6 +41,38 @@ impl Fingerprint {
     /// Short form used in cache directory names.
     pub fn short(&self) -> String {
         self.to_string()[..16].to_owned()
+    }
+}
+
+impl FromStr for Fingerprint {
+    type Err = String;
+
+    /// Parse the 64-digit hex form written by `Display`.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let invalid = || format!("not a 64-digit hex fingerprint: {s:?}");
+        if s.len() != 64 || !s.is_ascii() {
+            return Err(invalid());
+        }
+        let mut bytes = [0u8; 32];
+        for (byte, pair) in bytes.iter_mut().zip(s.as_bytes().chunks(2)) {
+            let pair = std::str::from_utf8(pair).map_err(|_| invalid())?;
+            *byte = u8::from_str_radix(pair, 16).map_err(|_| invalid())?;
+        }
+        Ok(Self(bytes))
+    }
+}
+
+impl Serialize for Fingerprint {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for Fingerprint {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        String::deserialize(d)?
+            .parse()
+            .map_err(serde::de::Error::custom)
     }
 }
 
@@ -94,6 +127,28 @@ mod tests {
             Fingerprint::compute("ab", &"", &[], "c"),
             Fingerprint::compute("a", &"", &[], "bc"),
         );
+    }
+
+    #[test]
+    fn parses_its_display_form_and_serialises_as_a_hex_string() {
+        let a = fp(&0, &[], "1");
+        assert_eq!(a.to_string().parse::<Fingerprint>(), Ok(a));
+        let json = serde_json::to_string(&a).unwrap();
+        assert_eq!(json, format!("\"{a}\""));
+        assert_eq!(serde_json::from_str::<Fingerprint>(&json).unwrap(), a);
+    }
+
+    #[test]
+    fn rejects_malformed_hex() {
+        let s = fp(&0, &[], "1").to_string();
+        for bad in [
+            &s[..62],
+            &format!("{s}00"),
+            &format!("zz{}", &s[2..]),
+            &format!("é{}", &s[2..]),
+        ] {
+            assert!(bad.parse::<Fingerprint>().is_err(), "{bad}");
+        }
     }
 
     #[test]

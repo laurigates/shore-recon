@@ -1,10 +1,13 @@
 //! Core building blocks for shoreline-recon: configuration, stage DAG,
-//! fingerprinting, the [`Stage`] trait and external tool execution.
+//! fingerprinting, the [`Stage`] trait, the stage cache and pipeline runner,
+//! and external tool execution.
 
+pub mod cache;
 pub mod config;
 pub mod dag;
 pub mod error;
 pub mod fingerprint;
+pub mod pipeline;
 pub mod stage;
 pub mod tools;
 
