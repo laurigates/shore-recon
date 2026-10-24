@@ -283,12 +283,22 @@ max_reproj_error_px  = 1.0
 
 ## Open questions
 
+Answers from the M0 spike are recorded in [ADR-0002](adr/0002-m0-spike-findings.md).
+
 1. Are the original images or video available? Which device and app were used?
+   *Answered: two DJI 4K/29.97 fps clips with SRT telemetry, captured 2026-10-23.*
 2. Does OpenMVS support masks natively? Does Brush? What is the fallback if not?
+   *Brush: yes, a `masks/` folder matched by file stem (not COLMAP naming). OpenMVS: still
+   unverified; COLMAP MVS with `StereoFusion.mask_path` was used instead.*
 3. Which segmentation model, and under what licence: an ADE20K-trained ONNX model or a SAM 2-based pipeline?
+   *Spike used OneFormer ADE20K Swin-L (MIT) via `transformers`; the ONNX export for the `ort`
+   backend is still to do.*
 4. Is a local CUDA GPU available, or only a wgpu path?
+   *Answered: a remote CUDA host (RTX 4090) driven over ssh; see `.claude/rules/remote-gpu-host.md`.*
 5. Is the primary deliverable the mesh, the splat, or both?
 6. Where are raw data and outputs stored: locally, on a NAS, or in object storage?
+   *Raw data and fetched results are local under `data/` and `work/`; full intermediates stay
+   on the GPU host.*
 
 ## Capture guidelines (recapture)
 
