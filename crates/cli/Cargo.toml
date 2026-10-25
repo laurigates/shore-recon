@@ -13,6 +13,7 @@ path = "src/main.rs"
 shoreline-core.workspace = true
 shoreline-frames.workspace = true
 shoreline-masks.workspace = true
+shoreline-sfm.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 toml.workspace = true
