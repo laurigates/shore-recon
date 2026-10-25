@@ -123,9 +123,14 @@ mod tests {
 
     #[test]
     fn field_boundaries_are_unambiguous() {
+        // Without length prefixes both pairs would hash the same bytes.
         assert_ne!(
-            Fingerprint::compute("ab", &"", &[], "c"),
-            Fingerprint::compute("a", &"", &[], "bc"),
+            Fingerprint::compute("s", &1, &[], "23"),
+            Fingerprint::compute("s", &12, &[], "3"),
+        );
+        assert_ne!(
+            Fingerprint::compute("s1", &2, &[], "3"),
+            Fingerprint::compute("s", &12, &[], "3"),
         );
     }
 

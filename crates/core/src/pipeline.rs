@@ -326,6 +326,8 @@ mod tests {
         let second = second.unwrap();
         assert_eq!(events, ["cached a", "cached b", "cached c", "cached d"]);
         assert_eq!(runs(&s), [1, 1, 1, 1]);
+        assert_eq!(second.len(), first.len(), "cached stages are reported too");
+        assert!(second.iter().all(|r| r.cached));
         for (f, c) in first.iter().zip(&second) {
             assert_eq!(
                 (f.fingerprint, &f.dir, &f.metrics),
@@ -357,6 +359,11 @@ mod tests {
             ["cached a", "run b", "done b", "run c", "done c", "cached d"]
         );
         assert_eq!(runs(&s), [1, 2, 2, 1]);
+        let cached: Vec<_> = after.iter().map(|r| (r.stage, r.cached)).collect();
+        assert_eq!(
+            cached,
+            [("a", true), ("b", false), ("c", false), ("d", true)]
+        );
         assert!(
             by_name(&before, "b").dir.join(MANIFEST_FILE).is_file(),
             "old output kept"
@@ -387,6 +394,38 @@ mod tests {
             ["a", "b"]
         );
         assert_eq!(runs(&s), [1, 1, 0, 0]);
+    }
+
+    #[test]
+    fn targets_run_their_transitive_dependencies() {
+        let e = env();
+        let s = stages();
+        let results = go(&e.ctx, &s, &["c"]).0.unwrap();
+        assert_eq!(
+            results.iter().map(|r| r.stage).collect::<Vec<_>>(),
+            ["a", "b", "c"]
+        );
+        assert_eq!(runs(&s), [1, 1, 1, 0]);
+    }
+
+    #[test]
+    fn stages_run_in_dependency_order_whatever_the_registration_order() {
+        let e = env();
+        let s = stages();
+        let reversed: Vec<&dyn Stage> = s.iter().rev().map(|f| f as &dyn Stage).collect();
+        let mut events = Vec::new();
+        run(&e.ctx, &reversed, &[], &mut |ev| {
+            if let Event::Running { stage, .. } = ev {
+                events.push(stage);
+            }
+        })
+        .unwrap();
+        let pos = |name| events.iter().position(|&s| s == name).unwrap();
+        assert_eq!(events.len(), 4);
+        assert!(
+            pos("a") < pos("b") && pos("b") < pos("c") && pos("a") < pos("d"),
+            "{events:?}"
+        );
     }
 
     #[test]
