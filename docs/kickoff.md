@@ -82,7 +82,7 @@ flowchart LR
 - **Dilation.** A morphological dilation of configurable width covers reflection boundaries at the waterline.
 - **Temporal refinement.** Optional, for video input. SAM 2 propagation reduces mask flicker between frames.
 - **Debug output.** Mask overlays are written for manual review.
-- The segmentation runs in a pinned container image, OneFormer ADE20K Swin-L on CPU; Rust does the post-processing ([ADR-0006](adr/0006-masks-segmentation-container.md)).
+- The first implemented backend is a pinned container image running OneFormer ADE20K Swin-L on CPU, with the post-processing in Rust ([ADR-0006](adr/0006-masks-segmentation-container.md)); the ONNX backend in the table above waits on #11.
 
 ### sfm
 

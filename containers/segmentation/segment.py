@@ -9,7 +9,7 @@ pixel belongs to one of the classes, 0 elsewhere, at the image's resolution
 and undilated. Prints "<image name> <class fraction>" per image. Classes are
 ADE20K label names (the first synonym, e.g. "person" for
 "person;individual;someone"). --check loads the model and validates the
-classes without reading images. Exits non-zero on an unknown class.
+classes without reading images. Exits 2 on an empty or unknown class list.
 """
 
 import argparse
@@ -23,10 +23,39 @@ from PIL import Image
 from transformers import OneFormerForUniversalSegmentation, OneFormerProcessor
 
 MODEL = os.environ.get("SEGMENT_MODEL", "/opt/models/oneformer")
+# Class maps upsampled at once; bounds peak memory (see class_mask).
+CHUNK = 16
 
 
 def label_name(label: str) -> str:
     return label.split(",")[0].split(";")[0].strip()
+
+
+def class_mask(outputs, size, ids):
+    """Pixels whose most likely class is in `ids`, at `size` (height, width).
+
+    Equal to the processor's post_process_semantic_segmentation(outputs,
+    target_sizes=[size]) followed by np.isin(..., ids): the same per-class
+    scores, bilinear upsampling (align_corners=False) and first-maximum argmax.
+    That method upsamples all 150 class maps at once, 3.5 GB in float32 for a
+    3200x1800 frame; upsampling CHUNK maps at a time keeps a running maximum
+    instead. Bilinear upsampling is per channel, so no value changes.
+    """
+    classes = outputs.class_queries_logits.softmax(dim=-1)[..., :-1]
+    masks = outputs.masks_queries_logits.sigmoid()
+    scores = torch.einsum("bqc, bqhw -> bchw", classes, masks)[0].float()
+    best = best_class = None
+    for start in range(0, scores.shape[0], CHUNK):
+        chunk = scores[None, start : start + CHUNK]
+        up = torch.nn.functional.interpolate(chunk, size=size, mode="bilinear", align_corners=False)[0]
+        value, index = up.max(dim=0)
+        if best is None:
+            best, best_class = value, index + start
+        else:
+            better = value > best  # strict: ties keep the earlier class, as argmax does
+            best = torch.where(better, value, best)
+            best_class = torch.where(better, index + start, best_class)
+    return np.isin(best_class.cpu().numpy(), ids)
 
 
 def main() -> int:
@@ -40,6 +69,9 @@ def main() -> int:
         ap.error("IMAGES and OUT are required unless --check is given")
 
     classes = [c.strip() for c in args.classes.split(",") if c.strip()]
+    if not classes:
+        print("segment: no classes given", file=sys.stderr)
+        return 2
     processor = OneFormerProcessor.from_pretrained(MODEL)
     model = OneFormerForUniversalSegmentation.from_pretrained(MODEL).eval()
     ids = sorted(i for i, label in model.config.id2label.items() if label_name(label) in classes)
@@ -65,8 +97,7 @@ def main() -> int:
         inputs = {k: v.to(device=device, dtype=dtype) if v.is_floating_point() else v.to(device) for k, v in inputs.items()}
         with torch.no_grad():
             outputs = model(**inputs)
-        seg = processor.post_process_semantic_segmentation(outputs, target_sizes=[image.size[::-1]])[0]
-        mask = np.isin(seg.cpu().numpy(), ids)
+        mask = class_mask(outputs, image.size[::-1], ids)
         Image.fromarray((mask * 255).astype(np.uint8), mode="L").save(args.out / f"{path.name}.png")
         print(f"{path.name} {mask.mean():.6f}", flush=True)
     return 0
