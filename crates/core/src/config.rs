@@ -44,11 +44,21 @@ pub struct Frames {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Masks {
-    pub backend: String,
+    pub backend: MasksBackend,
+    /// Model file for the `onnx` backend; the container image carries its own.
     pub model: Option<PathBuf>,
     pub classes: Vec<String>,
     pub dilate_px: u32,
     pub temporal: bool,
+}
+
+/// Segmentation backend: the pinned container image (ADR-0006), or ONNX
+/// through `ort` (#11, not implemented yet).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MasksBackend {
+    Container,
+    Onnx,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -142,6 +152,25 @@ impl Config {
                 "dataset.name must start with a letter or digit and contain only \
                  letters, digits, '.', '_' and '-' (it names a directory under work/)",
             );
+        }
+        match (self.masks.backend, &self.masks.model) {
+            (MasksBackend::Onnx, _) => {
+                return invalid(
+                    "masks.backend = \"onnx\" is not implemented yet (#11); use \"container\"",
+                );
+            }
+            (MasksBackend::Container, Some(_)) => {
+                return invalid(
+                    "masks.model is only used by the onnx backend; the container image carries its own",
+                );
+            }
+            (MasksBackend::Container, None) => {}
+        }
+        if self.masks.temporal {
+            return invalid("masks.temporal is not implemented yet");
+        }
+        if self.masks.classes.is_empty() {
+            return invalid("masks.classes must not be empty");
         }
         let numbers = [
             ("frames.fps", self.frames.fps),
@@ -309,6 +338,23 @@ mod tests {
         merge(&mut t, table("[dataset]\nname = \"x\"\ninput = \"x\"\n"));
         merge(&mut t, table(overrides));
         Config::from_table(t)
+    }
+
+    #[test]
+    fn masks_backend_options() {
+        let defaults = with_overrides("").unwrap();
+        assert_eq!(defaults.masks.backend, MasksBackend::Container);
+        assert_eq!(defaults.masks.model, None);
+        for (overrides, needle) in [
+            ("[masks]\nbackend = \"onnx\"\n", "#11"),
+            ("[masks]\nmodel = \"models/x.onnx\"\n", "masks.model"),
+            ("[masks]\ntemporal = true\n", "masks.temporal"),
+            ("[masks]\nclasses = []\n", "masks.classes"),
+            ("[masks]\nbackend = \"sam2\"\n", "sam2"),
+        ] {
+            let err = with_overrides(overrides).unwrap_err().to_string();
+            assert!(err.contains(needle), "{overrides:?}: {err}");
+        }
     }
 
     #[test]
