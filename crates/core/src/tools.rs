@@ -28,6 +28,9 @@ pub enum Runtime {
     Native,
     Podman,
     Docker,
+    /// `apptainer exec` of the OCI image (`docker://…`); Apptainer caches the
+    /// converted SIF and runs as the invoking user.
+    Apptainer,
 }
 
 /// How one tool runs on this machine.
@@ -158,17 +161,29 @@ impl Tool {
     /// The process to spawn for `inv`. Nothing is executed.
     pub fn command(&self, inv: &Invocation) -> Result<Command> {
         self.spec.validate(&self.name)?;
-        let (engine, gpu_flag) = match self.spec.runtime {
-            Runtime::Native => {
-                let mut cmd = Command::new(&self.spec.program);
-                cmd.args(&inv.args);
-                return Ok(cmd);
-            }
-            Runtime::Podman => ("podman", ["--device", "nvidia.com/gpu=all"]),
-            Runtime::Docker => ("docker", ["--gpus", "all"]),
+        let (engine, prefix, gpu_flag, bind_flag): (_, &[&str], &[&str], _) =
+            match self.spec.runtime {
+                Runtime::Native => {
+                    let mut cmd = Command::new(&self.spec.program);
+                    cmd.args(&inv.args);
+                    return Ok(cmd);
+                }
+                Runtime::Podman => (
+                    "podman",
+                    &["run", "--rm"],
+                    &["--device", "nvidia.com/gpu=all"],
+                    "-v",
+                ),
+                Runtime::Docker => ("docker", &["run", "--rm"], &["--gpus", "all"], "-v"),
+                Runtime::Apptainer => ("apptainer", &["exec"], &["--nv"], "--bind"),
+            };
+        // `--bind` takes a comma-separated list, so a comma would split the path.
+        let forbidden: &[char] = match self.spec.runtime {
+            Runtime::Apptainer => &[':', ','],
+            _ => &[':'],
         };
         let mut cmd = Command::new(engine);
-        cmd.args(["run", "--rm"]);
+        cmd.args(prefix);
         if self.spec.gpu {
             cmd.args(gpu_flag);
         }
@@ -176,20 +191,30 @@ impl Tool {
             let parent = dir
                 .components()
                 .any(|c| c == std::path::Component::ParentDir);
-            if !dir.is_absolute() || parent || dir.as_os_str().to_string_lossy().contains(':') {
+            if !dir.is_absolute() || parent || dir.as_os_str().to_string_lossy().contains(forbidden)
+            {
                 return Err(Error::Tools(format!(
-                    "{}: mount {} must be an absolute path without '..' or ':'",
+                    "{}: mount {} must be an absolute path without '..' or {}",
                     self.name,
-                    dir.display()
+                    dir.display(),
+                    forbidden
+                        .iter()
+                        .map(|c| format!("'{c}'"))
+                        .collect::<Vec<_>>()
+                        .join(" or ")
                 )));
             }
             let mut bind = dir.as_os_str().to_owned();
             bind.push(":");
             bind.push(dir);
-            cmd.arg("-v").arg(bind);
+            cmd.arg(bind_flag).arg(bind);
         }
         let image = self.spec.image.as_deref().expect("validated above");
-        cmd.arg(image).arg(&self.spec.program).args(&inv.args);
+        match self.spec.runtime {
+            Runtime::Apptainer => cmd.arg(format!("docker://{image}")),
+            _ => cmd.arg(image),
+        };
+        cmd.arg(&self.spec.program).args(&inv.args);
         Ok(cmd)
     }
 
@@ -372,6 +397,52 @@ mod tests {
     }
 
     #[test]
+    fn apptainer_execs_the_oci_image_with_binds_and_nv() {
+        let inv = Invocation::new(["help"]).mount("/work/a").mount("/data");
+        let cmd = container(Runtime::Apptainer, true).command(&inv).unwrap();
+        let docker_ref = format!("docker://{IMAGE}");
+        assert_eq!(
+            argv(&cmd),
+            [
+                "apptainer",
+                "exec",
+                "--nv",
+                "--bind",
+                "/work/a:/work/a",
+                "--bind",
+                "/data:/data",
+                &docker_ref,
+                "colmap",
+                "help",
+            ]
+        );
+    }
+
+    #[test]
+    fn apptainer_without_gpu_has_no_nv_flag() {
+        let cmd = container(Runtime::Apptainer, false)
+            .command(&Invocation::default())
+            .unwrap();
+        let docker_ref = format!("docker://{IMAGE}");
+        assert_eq!(argv(&cmd), ["apptainer", "exec", &docker_ref, "colmap"]);
+    }
+
+    #[test]
+    fn apptainer_mounts_must_be_comma_free() {
+        // `--bind` splits its value on commas.
+        let err = container(Runtime::Apptainer, false)
+            .command(&Invocation::default().mount("/work/a,b"))
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::Tools(m) if m.contains("/work/a,b")),
+            "{err}"
+        );
+        container(Runtime::Docker, false)
+            .command(&Invocation::default().mount("/work/a,b"))
+            .unwrap();
+    }
+
+    #[test]
     fn container_without_gpu_has_no_gpu_flag() {
         let cmd = container(Runtime::Docker, false)
             .command(&Invocation::default())
@@ -404,15 +475,18 @@ mod tests {
             ("runtime = \"native\"\nprogram = \"x\"\ngpu = true", "gpu"),
             ("runtime = \"native\"\nprogram = \"\"", "program"),
             ("runtime = \"native\"\nprogram = \"x\"\nflags = 1", "flags"),
-            ("runtime = \"apptainer\"\nprogram = \"x\"", "apptainer"),
+            ("runtime = \"apptainer\"\nprogram = \"x\"", "image"),
+            ("runtime = \"singularity\"\nprogram = \"x\"", "singularity"),
         ] {
             let err = tools_err(&format!("[x]\n{body}\n"));
             assert!(err.contains(needle), "{body:?}: {err}");
         }
-        tools(&format!(
-            "[x]\nruntime = \"podman\"\nprogram = \"x\"\ngpu = true\n{digest}\n"
-        ))
-        .unwrap();
+        for runtime in ["podman", "apptainer"] {
+            tools(&format!(
+                "[x]\nruntime = \"{runtime}\"\nprogram = \"x\"\ngpu = true\n{digest}\n"
+            ))
+            .unwrap();
+        }
     }
 
     #[test]
@@ -557,9 +631,28 @@ mod tests {
 
     #[test]
     fn container_version_is_the_image_reference_without_running() {
-        let v = container(Runtime::Docker, false)
-            .version(&["--version"])
-            .unwrap();
-        assert_eq!(v, IMAGE);
+        for runtime in [Runtime::Docker, Runtime::Apptainer] {
+            let v = container(runtime, false).version(&["--version"]).unwrap();
+            assert_eq!(v, IMAGE);
+        }
+    }
+
+    mod integration {
+        use super::*;
+
+        /// Needs `apptainer` and network access to Docker Hub on first run.
+        #[test]
+        fn apptainer_runs_colmap_help() {
+            let dir = tempfile::tempdir().unwrap();
+            let work = dir.path().canonicalize().unwrap();
+            let log = work.join("colmap.log");
+            let inv = Invocation::new(["help"]).mount(&work);
+            let rec = container(Runtime::Apptainer, false)
+                .run(&inv, &log)
+                .unwrap();
+            assert_eq!(rec.runtime, Runtime::Apptainer);
+            let text = std::fs::read_to_string(&log).unwrap();
+            assert!(text.contains("COLMAP"), "{text}");
+        }
     }
 }
