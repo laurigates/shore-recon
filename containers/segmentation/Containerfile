@@ -1,0 +1,36 @@
+# Segmentation backend for the masks stage (ADR-0006): OneFormer ADE20K Swin-L
+# (MIT) on CPU torch, weights baked in at a pinned revision so the image digest
+# pins code and weights together. Built and pushed by .github/workflows/containers.yml.
+FROM python:3.12-slim-bookworm@sha256:6a0e06f5ba0b373d051aabd3fffb9b873f27f9a2a3a14bcbe37dee6f0e3bbc70
+
+LABEL org.opencontainers.image.source="https://github.com/laurigates/data-processing" \
+      org.opencontainers.image.description="shoreline-recon masks backend: OneFormer ADE20K Swin-L"
+
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --index-url https://download.pytorch.org/whl/cpu torch==2.14.1 \
+    && pip install -r /tmp/requirements.txt \
+    && rm /tmp/requirements.txt \
+    && python -c "import torch, sys; sys.exit(0 if torch.version.cuda is None else 'CUDA torch installed')"
+
+ARG MODEL=shi-labs/oneformer_ade20k_swin_large
+ARG MODEL_REVISION=4a5bac8e64f82681a12db2e151a4c2f4ce6092b2
+ARG CLASS_INFO_REPO=shi-labs/oneformer_demo
+ARG CLASS_INFO_REVISION=4d683bd5bf84e9c8b5537dce306230bde409fe89
+COPY fetch_model.py /tmp/fetch_model.py
+RUN python /tmp/fetch_model.py "${MODEL}" "${MODEL_REVISION}" "${CLASS_INFO_REPO}" \
+        "${CLASS_INFO_REVISION}" /opt/models/oneformer \
+    && rm -rf /tmp/fetch_model.py /root/.cache/huggingface
+
+ENV SEGMENT_MODEL=/opt/models/oneformer \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1
+
+COPY --chmod=755 segment.py /usr/local/bin/segment
+
+# Fails the build if the dependencies, the weights or the default classes are broken.
+RUN segment --check --classes water,sea,river,lake,sky,person,boat

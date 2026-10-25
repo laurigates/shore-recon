@@ -1,0 +1,60 @@
+name: containers
+
+# Builds the tool images under containers/ (ADR-0006). Pull requests build
+# only; main pushes to GHCR, and the job summary prints the digest that
+# configs/tools.toml pins.
+on:
+  push:
+    branches: [main]
+    paths:
+      - containers/segmentation/**
+      - .github/workflows/containers.yml
+  pull_request:
+    paths:
+      - containers/segmentation/**
+      - .github/workflows/containers.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: containers-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  segmentation:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/laurigates/shoreline-segmentation
+      PUSH: ${{ github.event_name != 'pull_request' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # linux/arm64 only for now (local Docker on Apple Silicon); built under QEMU.
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        if: env.PUSH == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: containers/segmentation
+          file: containers/segmentation/Containerfile
+          platforms: linux/arm64
+          push: ${{ env.PUSH == 'true' }}
+          tags: ${{ env.IMAGE }}:sha-${{ github.sha }}
+          provenance: false
+          cache-from: type=gha,scope=segmentation
+          cache-to: type=gha,scope=segmentation,mode=max
+      - name: Digest
+        if: env.PUSH == 'true'
+        run: echo "${IMAGE}@${{ steps.build.outputs.digest }}" | tee -a "$GITHUB_STEP_SUMMARY"
