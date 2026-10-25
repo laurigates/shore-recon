@@ -38,10 +38,14 @@ pub struct RunContext {
 }
 
 impl RunContext {
-    /// Context whose cache lives under `work_root/<dataset name>/`, made
-    /// absolute so stages can bind-mount their directories into containers.
+    /// Context whose cache lives under `work_root/<dataset name>/`. The root is
+    /// created and made canonical (absolute, no `..`, no symlinks): containers
+    /// bind-mount stage directories at the same path, and Docker cleans a
+    /// mount's target but not the arguments that name it, so a `..` in the
+    /// path would point at an unmounted directory inside the container.
     pub fn new(config: Config, tools: Tools, work_root: &Path) -> Result<Self> {
-        let work_root = std::path::absolute(work_root).map_err(io_error(work_root))?;
+        std::fs::create_dir_all(work_root).map_err(io_error(work_root))?;
+        let work_root = std::fs::canonicalize(work_root).map_err(io_error(work_root))?;
         let work_dir = work_root.join(&config.dataset.name);
         Ok(Self {
             config,
@@ -83,16 +87,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn work_dir_is_absolute_even_for_a_relative_root() {
+    fn work_dir_is_canonical_for_a_relative_root_with_parent_components() {
         let config = Config::load(
             &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../configs/reposalmi-laajasalo.toml"),
         )
         .unwrap();
         let tools = Tools::from_table(toml::Table::new()).unwrap();
-        let ctx = RunContext::new(config, tools, Path::new("work")).unwrap();
-        let expected = std::env::current_dir()
+        let tmp = tempfile::tempdir().unwrap();
+        // A relative path from the working directory into the temp dir, through
+        // `..` and a not-yet-existing `work/`, as `--work ../x/work` would give.
+        let cwd = std::env::current_dir().unwrap();
+        let up: PathBuf = cwd.components().skip(1).map(|_| "..").collect();
+        let root = up
+            .join(tmp.path().strip_prefix("/").unwrap())
+            .join("sub/../work");
+        assert!(root.is_relative());
+
+        let ctx = RunContext::new(config, tools, &root).unwrap();
+        let expected = std::fs::canonicalize(tmp.path())
             .unwrap()
             .join("work/reposalmi-laajasalo");
         assert_eq!(ctx.work_dir, expected);
+        assert!(
+            ctx.work_dir
+                .components()
+                .all(|c| c != std::path::Component::ParentDir)
+        );
     }
 }

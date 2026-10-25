@@ -15,8 +15,9 @@ an image's masked fraction exceeds 0.7. The M0 spike dilated with
 ## Decision
 
 1. The stage depends on `frames` and segments its `images/` with the `segment` tool, passing
-   `masks.classes`. Its version is `masks/<revision> <segment version>`, the image reference for
-   the container (ADR-0003).
+   `masks.classes`. Its version is `masks/<revision> <image reference>`. The weights live in the
+   image (ADR-0006), so a `segment` configured as a native tool is refused: nothing would identify
+   its weights.
 2. Dilation by `masks.dilate_px` reproduces OpenCV's elliptical structuring element exactly,
    including its rounding (radius 1 is a 5-pixel cross, radius 8 has 213 pixels), with pixels
    outside the image never contributing.
@@ -32,10 +33,10 @@ an image's masked fraction exceeds 0.7. The M0 spike dilated with
 
 ## Consequences
 
-Measured on the 121 Laajasalo frames, with the raw masks from the image's run (ADR-0006): the
-stage's masks equal OpenCV's dilation of the same raw masks on every pixel of every frame; mean
-masked fraction 0.503, maximum 0.647; IoU with the spike's masks mean 0.995. Dilation and writing
-take about 8 s for the 121 frames (release build).
+Measured on the 121 Laajasalo frames with `shoreline-recon run` and the published image: 471 s
+for the stage (release build, OrbStack); the stage's masks equal OpenCV's dilation of the same raw
+masks on every pixel of every frame; mean masked fraction 0.503, maximum 0.647; IoU with the
+spike's masks mean 0.995. Dilation and writing take about 8 s of that.
 
 - Brush finds masks by file stem, not COLMAP naming (ADR-0002); the splat stage, not this one,
   provides masks under Brush's names.

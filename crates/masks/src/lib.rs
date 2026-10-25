@@ -60,9 +60,17 @@ impl Stage for Masks {
         serde_json::to_value(&config.masks).expect("masks config serialises to JSON")
     }
 
+    /// The pinned image reference: the weights live in the image (ADR-0006),
+    /// so a native `segment` has no version that identifies them.
     fn version(&self, ctx: &RunContext) -> Result<String> {
-        let segment = ctx.tools.get("segment")?.version(&["--version"])?;
-        Ok(format!("{NAME}/{REVISION} {segment}"))
+        let segment = ctx.tools.get("segment")?;
+        if segment.spec.image.is_none() {
+            return Err(stage_error(
+                "the segment tool must run from its pinned container image (ADR-0006); \
+                 a native segment has no version that identifies its weights",
+            ));
+        }
+        Ok(format!("{NAME}/{REVISION} {}", segment.version(&[])?))
     }
 
     fn run(&self, ctx: &RunContext, inputs: &Inputs, out_dir: &Path) -> Result<StageRun> {
@@ -285,16 +293,15 @@ mod tests {
         }
     }
 
-    /// An executable stand-in for the segment tool. `--version` prints a
-    /// sentinel; otherwise it records its arguments in `args.txt` and writes
-    /// the raw fixture mask for every frame except those named in `skip`.
+    /// An executable stand-in for the segment tool: records its arguments in
+    /// `args.txt` and writes the raw fixture mask for every frame except those
+    /// named in `skip`. Like the real tool, it has no `--version`.
     fn stub_segment(dir: &Path, skip: &[&str]) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let raw = fixture("masks", "raw_320x240.png");
         let skips: String = skip.iter().map(|s| format!(" {s}")).collect();
         let script = format!(
             "#!/bin/sh\n\
-             if [ \"$1\" = --version ]; then echo 'segment STUB-1'; exit 0; fi\n\
              printf '%s\\n' \"$@\" > '{args}'\n\
              mkdir -p \"$4\"\n\
              for f in \"$3\"/*.jpg; do\n\
@@ -315,13 +322,22 @@ mod tests {
     /// A context whose segment tool is the stub, and frames output holding
     /// copies of the named frames fixtures as 00001.jpg, 00002.jpg, …
     fn setup(dir: &Path, frames: &[&str], skip: &[&str]) -> (RunContext, Inputs, PathBuf) {
+        setup_with(dir, repo_config(), frames, skip)
+    }
+
+    fn setup_with(
+        dir: &Path,
+        config: Config,
+        frames: &[&str],
+        skip: &[&str],
+    ) -> (RunContext, Inputs, PathBuf) {
         let program = stub_segment(dir, skip);
         let table = format!(
             "[segment]\nruntime = \"native\"\nprogram = \"{}\"\n",
             program.display()
         );
         let tools = Tools::from_table(table.parse().unwrap()).unwrap();
-        let ctx = RunContext::new(repo_config(), tools, &dir.join("work")).unwrap();
+        let ctx = RunContext::new(config, tools, &dir.join("work")).unwrap();
         let frames_dir = dir.join("frames-out");
         fs::create_dir_all(frames_dir.join("images")).unwrap();
         for (i, name) in frames.iter().enumerate() {
@@ -342,10 +358,43 @@ mod tests {
     }
 
     #[test]
-    fn version_is_the_revision_and_the_segment_version() {
+    fn version_is_the_revision_and_the_image_reference() {
+        let dir = tempfile::tempdir().unwrap();
+        let image =
+            "ghcr.io/x/seg@sha256:0000000000000000000000000000000000000000000000000000000000000000";
+        let table = format!(
+            "[segment]\nruntime = \"docker\"\nprogram = \"segment\"\nimage = \"{image}\"\n"
+        );
+        let tools = Tools::from_table(table.parse().unwrap()).unwrap();
+        let ctx = RunContext::new(repo_config(), tools, dir.path()).unwrap();
+        assert_eq!(Masks.version(&ctx).unwrap(), format!("masks/1 {image}"));
+    }
+
+    #[test]
+    fn a_native_segment_tool_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let (ctx, _, _) = setup(dir.path(), &[], &[]);
-        assert_eq!(Masks.version(&ctx).unwrap(), "masks/1 segment STUB-1");
+        let err = Masks.version(&ctx).unwrap_err().to_string();
+        assert!(
+            err.contains("container image") && err.contains("ADR-0006"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn dilation_follows_masks_dilate_px() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = repo_config();
+        config.masks.dilate_px = 3;
+        let (ctx, inputs, out) = setup_with(dir.path(), config, &["sharp"], &[]);
+        let run = Masks.run(&ctx, &inputs, &out).unwrap();
+        let mask = image::open(out.join("masks/00001.jpg.png"))
+            .unwrap()
+            .into_luma8();
+        assert_eq!(mask.get_pixel(5, 82).0[0], 0, "raw rows 0..80 grown by 3");
+        assert_eq!(mask.get_pixel(5, 83).0[0], 255);
+        let expected = 83.0 * 320.0 / (320.0 * 240.0);
+        assert!((run.metrics["masked_mean"] - expected).abs() < 1e-12);
     }
 
     #[test]
@@ -388,6 +437,31 @@ mod tests {
         let csv = fs::read_to_string(out.join("masks.csv")).unwrap();
         assert_eq!(csv.lines().count(), 4, "{csv}");
         assert_eq!(run.tools[0].log, out.join("logs/segment.log"));
+
+        // Overlay content (128x96): mean red-minus-green over a row range.
+        let overlay = image::open(out.join("overlays/00001.jpg"))
+            .unwrap()
+            .into_rgb8();
+        let red_minus_green = |rows: std::ops::Range<u32>| {
+            let px: Vec<f64> = rows
+                .flat_map(|y| (10..118).map(move |x| (x, y)))
+                .map(|(x, y)| {
+                    let [r, g, _] = overlay.get_pixel(x, y).0;
+                    f64::from(r) - f64::from(g)
+                })
+                .collect();
+            px.iter().sum::<f64>() / px.len() as f64
+        };
+        assert!(
+            red_minus_green(5..25) > 100.0,
+            "ignored rows are tinted magenta"
+        );
+        assert!(red_minus_green(60..90) < 40.0, "kept rows are not tinted");
+        // Overlay row 33 samples source rows ~81-86: in the dilation band, not the raw mask.
+        assert!(
+            red_minus_green(33..34) > 100.0,
+            "the overlay shows the dilated mask"
+        );
     }
 
     #[test]

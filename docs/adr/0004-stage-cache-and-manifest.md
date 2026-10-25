@@ -36,8 +36,10 @@ fingerprint and check its own outputs. Stages will run tools for tens of minutes
    are reported as events and in the run results, never stored.
 6. Running a stage selects it and its transitive dependencies; with no targets, all registered
    stages run.
-7. The work directory is made absolute, so stage directories can be bind-mounted into containers
-   as they are. `dataset.name` must be a single path component of letters, digits, `.`, `_` and
+7. The work directory is created and made canonical (absolute, no `..`, no symlinks), so stage
+   directories can be bind-mounted into containers as they are: Docker cleans a mount's target but
+   not the arguments that name it, so a `..` would point at an unmounted directory. The ToolRunner
+   rejects mounts containing `..`. `dataset.name` must be a single path component of letters, digits, `.`, `_` and
    `-`, starting with a letter or digit.
 
 ## Consequences
