@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use shoreline_core::pipeline::{self, Event, StageResult};
 use shoreline_core::{Config, RunContext, Stage, Tools, dag};
@@ -47,6 +47,37 @@ fn load(path: &Path) -> Result<Config> {
 
 fn load_tools(config: &Path, overlay: Option<&Path>) -> Result<Tools> {
     Tools::load(config, overlay).with_context(|| format!("loading tools for {}", config.display()))
+}
+
+/// Refuse targets that are not implemented, telling a planned stage from a typo.
+fn check_targets(targets: &[&str], implemented: &[&str]) -> Result<()> {
+    let planned: Vec<&str> = dag::PIPELINE.iter().map(|(name, _)| *name).collect();
+    for target in targets {
+        if implemented.contains(target) {
+            continue;
+        }
+        if planned.contains(target) {
+            bail!(
+                "stage {target} is not implemented yet (implemented: {})",
+                implemented.join(", ")
+            );
+        }
+        bail!("unknown stage {target} (stages: {})", planned.join(", "));
+    }
+    Ok(())
+}
+
+/// `dataset.input` must exist; relative paths resolve against `cwd`.
+fn check_input(input: &Path, cwd: &Path) -> Result<()> {
+    if !input.exists() {
+        bail!(
+            "dataset.input {} does not exist (relative paths resolve against the working \
+             directory, {})",
+            input.display(),
+            cwd.display()
+        );
+    }
+    Ok(())
 }
 
 fn report(event: Event<'_>) {
@@ -97,10 +128,50 @@ fn main() -> Result<()> {
             let tools = load_tools(&config, cli.tools.as_deref())?;
             let ctx = RunContext::new(load(&config)?, tools, &cli.work)?;
             let targets: Vec<&str> = stages.iter().map(String::as_str).collect();
+            let implemented: Vec<&str> = STAGES.iter().map(|s| s.name()).collect();
+            check_targets(&targets, &implemented)?;
+            check_input(&ctx.config.dataset.input, &std::env::current_dir()?)?;
             for result in pipeline::run(&ctx, STAGES, &targets, &mut report)? {
                 println!("{}", summary(&result));
             }
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn targets_tell_planned_stages_from_typos() {
+        check_targets(&["frames"], &["frames"]).unwrap();
+        check_targets(&[], &["frames"]).unwrap();
+        let planned = check_targets(&["masks"], &["frames"])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            planned.contains("not implemented yet (implemented: frames)"),
+            "{planned}"
+        );
+        let typo = check_targets(&["frame"], &["frames"])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            typo.contains("unknown stage frame") && typo.contains("masks"),
+            "{typo}"
+        );
+    }
+
+    #[test]
+    fn missing_input_names_the_key_and_the_working_directory() {
+        let err = check_input(Path::new("data/raw/nope.mp4"), Path::new("/somewhere"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("dataset.input data/raw/nope.mp4") && err.contains("/somewhere"),
+            "{err}"
+        );
+        check_input(Path::new(env!("CARGO_MANIFEST_DIR")), Path::new("/")).unwrap();
+    }
 }

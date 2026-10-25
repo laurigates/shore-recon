@@ -28,8 +28,8 @@ driven by `just` (GPU recipes need a CUDA host: see `.env.example`). Findings:
 cargo run -- config configs/reposalmi-laajasalo.toml   # resolved config
 cargo run -- plan   configs/reposalmi-laajasalo.toml   # stage order
 cargo run -- tools  configs/reposalmi-laajasalo.toml   # resolved tools
-cargo run -- run    configs/reposalmi-laajasalo.toml   # implemented stages
-cargo run -- run --stage frames configs/reposalmi-laajasalo.toml
+cargo run --release -- run configs/reposalmi-laajasalo.toml   # implemented stages
+cargo run --release -- run --stage frames configs/reposalmi-laajasalo.toml
 ```
 
 `run` caches each stage's output under `work/<dataset>/<stage>/<fingerprint>/`

@@ -1,6 +1,8 @@
 //! Blur metric: variance of the Laplacian of a JPEG's luma, matching OpenCV's
 //! `cv2.Laplacian(cv2.imread(path, cv2.IMREAD_GRAYSCALE), cv2.CV_64F).var()`,
-//! the measurement `blur_threshold` was calibrated on in M0 (ADR-0005).
+//! the measurement `blur_threshold` was calibrated on in M0 (ADR-0005), for
+//! the YCbCr and grayscale JPEGs ffmpeg writes. CMYK and Adobe RGB-transform
+//! JPEGs are not decoded as OpenCV does; photo input (#23) needs them.
 
 use std::path::Path;
 
