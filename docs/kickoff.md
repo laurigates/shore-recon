@@ -19,9 +19,10 @@ The fix is to exclude water and other unreliable regions from every reconstructi
 - Single-command, reproducible runs: `shoreline-recon run <config>`.
 - Automatic masking of water, sky and transient objects.
 - Pluggable backends for each stage: masking, SfM, dense reconstruction and splatting.
-- Outputs:
+- Outputs ([ADR-0008](adr/0008-v1-deliverables-and-gpu-stages.md)):
   - a mesh as GLB;
   - Gaussian splats as PLY;
+  - a showcase video rendered from the splats;
   - a metrics report as JSON.
 - Quality gates that fail a run when registration is poor.
 - Content-addressed stage caching. A config change reruns only the affected stage and its dependents.
@@ -269,6 +270,7 @@ max_reproj_error_px  = 1.0
 - `shoreline-recon run configs/reposalmi-laajasalo.toml` produces:
   - a GLB with a water plane;
   - a splat PLY;
+  - a showcase video;
   - `report.json`.
 - All gates pass.
 - A second run with an unchanged config is a full cache hit.
@@ -299,8 +301,10 @@ Answers from the M0 spike are recorded in [ADR-0002](adr/0002-m0-spike-findings.
    *Spike used OneFormer ADE20K Swin-L (MIT) via `transformers`; the ONNX export for the `ort`
    backend is still to do.*
 4. Is a local CUDA GPU available, or only a wgpu path?
-   *Answered: a remote CUDA host (RTX 4090) driven over ssh; see `.claude/rules/remote-gpu-host.md`.*
+   *Answered: a remote CUDA host (RTX 4090) driven over ssh; see `.claude/rules/remote-gpu-host.md`.
+   COLMAP, and the GPU stages after it, run there ([ADR-0008](adr/0008-v1-deliverables-and-gpu-stages.md)).*
 5. Is the primary deliverable the mesh, the splat, or both?
+   *Answered: the mesh, the splat and a showcase video at least ([ADR-0008](adr/0008-v1-deliverables-and-gpu-stages.md)).*
 6. Where are raw data and outputs stored: locally, on a NAS, or in object storage?
    *Raw data and fetched results are local under `data/` and `work/`; full intermediates stay
    on the GPU host.*
