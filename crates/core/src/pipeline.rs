@@ -3,15 +3,16 @@
 //!
 //! A stage's fingerprint is computed here, not by the stage, from its name,
 //! its config, its upstream fingerprints and its version, so no stage can
-//! leave its lineage out.
+//! leave its lineage out. Stages without dependencies take the content
+//! fingerprint of the dataset input as their upstream.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::cache::{self, Manifest, Upstream};
+use crate::cache::{self, Manifest, Source, Upstream};
 use crate::dag::topo_order;
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, io_error};
 use crate::fingerprint::Fingerprint;
 use crate::stage::{Inputs, Metrics, RunContext, Stage, StageOutput};
 
@@ -23,6 +24,8 @@ pub struct StageResult {
     pub dir: PathBuf,
     pub cached: bool,
     pub metrics: Metrics,
+    /// From the stage's gate; recomputed on every run, never cached.
+    pub warnings: Vec<String>,
 }
 
 /// Progress, reported as it happens.
@@ -38,6 +41,11 @@ pub enum Event<'a> {
         dir: &'a Path,
     },
     Finished(&'a StageResult),
+    /// A gate passed with a warning (reported after `Finished`).
+    Warning {
+        stage: &'static str,
+        message: &'a str,
+    },
 }
 
 /// Run `targets` and everything they depend on (all `stages` when `targets`
@@ -53,6 +61,11 @@ pub fn run(
     let order = topo_order(&graph)?;
     let selected = with_dependencies(&graph, targets)?;
     let by_name: BTreeMap<&str, &dyn Stage> = stages.iter().map(|s| (s.name(), *s)).collect();
+    let input = &ctx.config.dataset.input;
+    let source = Source {
+        path: input.clone(),
+        fingerprint: Fingerprint::of_content(input)?,
+    };
 
     let mut outputs: BTreeMap<&str, StageOutput> = BTreeMap::new();
     let mut results = Vec::new();
@@ -63,9 +76,16 @@ pub fn run(
             .iter()
             .map(|&dep| (dep, outputs[dep].clone()))
             .collect();
-        let result = run_stage(ctx, stage, &inputs, on_event)?;
+        let source = stage.deps().is_empty().then_some(&source);
+        let mut result = run_stage(ctx, stage, &inputs, source, on_event)?;
         on_event(Event::Finished(&result));
-        stage.gate(&ctx.config, &result.metrics)?;
+        result.warnings = stage.gate(&ctx.config, &result.metrics)?;
+        for message in &result.warnings {
+            on_event(Event::Warning {
+                stage: name,
+                message,
+            });
+        }
         outputs.insert(
             name,
             StageOutput {
@@ -105,12 +125,17 @@ fn run_stage(
     ctx: &RunContext,
     stage: &dyn Stage,
     inputs: &Inputs,
+    source: Option<&Source>,
     on_event: &mut dyn FnMut(Event<'_>),
 ) -> Result<StageResult> {
     let name = stage.name();
     let config = stage.config(&ctx.config);
     let version = stage.version(ctx)?;
-    let upstream: Vec<Fingerprint> = inputs.values().map(|o| o.fingerprint).collect();
+    let upstream: Vec<Fingerprint> = inputs
+        .values()
+        .map(|o| o.fingerprint)
+        .chain(source.map(|s| s.fingerprint))
+        .collect();
     let fingerprint = Fingerprint::compute(name, &config, &upstream, &version);
     let dir = ctx.stage_dir(name, &fingerprint);
     let result = |cached, metrics| StageResult {
@@ -119,29 +144,42 @@ fn run_stage(
         dir: dir.clone(),
         cached,
         metrics,
+        warnings: Vec::new(),
     };
 
     if let Some(manifest) = cache::lookup(&dir, &fingerprint)? {
         return Ok(result(true, manifest.metrics));
     }
-    let io = |path: &Path| {
-        let path = path.to_owned();
-        move |source| Error::Io { path, source }
-    };
     if dir.exists() {
-        std::fs::remove_dir_all(&dir).map_err(io(&dir))?;
+        std::fs::remove_dir_all(&dir).map_err(io_error(&dir))?;
         on_event(Event::Discarded {
             stage: name,
             dir: &dir,
         });
     }
-    std::fs::create_dir_all(&dir).map_err(io(&dir))?;
+    std::fs::create_dir_all(&dir).map_err(io_error(&dir))?;
     on_event(Event::Running {
         stage: name,
         dir: &dir,
     });
 
     let run = stage.run(ctx, inputs, &dir)?;
+    // Logs relative to the output, so they resolve after the tree is copied.
+    let tools = run
+        .tools
+        .into_iter()
+        .map(|mut record| {
+            let Ok(rel) = record.log.strip_prefix(&dir) else {
+                return Err(Error::Cache(format!(
+                    "{name}: tool log {} is outside {}",
+                    record.log.display(),
+                    dir.display()
+                )));
+            };
+            record.log = rel.to_owned();
+            Ok(record)
+        })
+        .collect::<Result<Vec<_>>>()?;
     let manifest = Manifest {
         stage: name.to_owned(),
         fingerprint,
@@ -154,13 +192,14 @@ fn run_stage(
                 fingerprint: o.fingerprint,
             })
             .collect(),
-        tools: run.tools,
+        source: source.cloned(),
+        tools,
         metrics: run.metrics,
         created_unix: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_secs()),
     };
-    cache::write_manifest(&dir, &manifest)?;
+    cache::publish(&dir, &manifest)?;
     Ok(result(false, manifest.metrics))
 }
 
@@ -171,20 +210,23 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::cache::{MANIFEST_FILE, lookup};
+    use crate::cache::{MANIFEST_FILE, Source, lookup};
     use crate::stage::{Inputs, StageRun};
     use crate::tools::{Invocation, Runtime, Tool, ToolSpec};
     use crate::{Config, Error, Tools};
 
-    /// Writes `out.txt` and reports `score`; gated on
-    /// `gates.min_registered_ratio`.
+    /// Writes `out.txt` and reports `score` and `masked`; fails its gate when
+    /// `score < gates.min_registered_ratio`, warns when
+    /// `masked > gates.max_masked_fraction`.
     struct Fake {
         name: &'static str,
         deps: &'static [&'static str],
         config: RefCell<serde_json::Value>,
         version: RefCell<String>,
         score: Cell<f64>,
+        masked: Cell<f64>,
         fail: Cell<bool>,
+        log_outside: Cell<bool>,
         runs: Cell<u32>,
     }
 
@@ -195,7 +237,9 @@ mod tests {
             config: RefCell::new(serde_json::json!({"n": 1})),
             version: RefCell::new("1".into()),
             score: Cell::new(1.0),
+            masked: Cell::new(0.0),
             fail: Cell::new(false),
+            log_outside: Cell::new(false),
             runs: Cell::new(0),
         }
     }
@@ -228,7 +272,10 @@ mod tests {
             if self.fail.get() {
                 return Err(Error::Config(format!("{} failed", self.name)));
             }
-            let log = out_dir.join("logs/echo.log");
+            let log = match self.log_outside.get() {
+                true => out_dir.parent().unwrap().join("echo.log"),
+                false => out_dir.join("logs/echo.log"),
+            };
             let echo = Tool {
                 name: "sh".into(),
                 spec: ToolSpec {
@@ -241,15 +288,23 @@ mod tests {
             let record = echo.run(&Invocation::new(["-c", "echo ok"]), &log)?;
             Ok(StageRun {
                 tools: vec![record],
-                metrics: [("score".to_owned(), self.score.get())].into(),
+                metrics: [
+                    ("score".to_owned(), self.score.get()),
+                    ("masked".to_owned(), self.masked.get()),
+                ]
+                .into(),
             })
         }
-        fn gate(&self, config: &Config, metrics: &Metrics) -> Result<()> {
+        fn gate(&self, config: &Config, metrics: &Metrics) -> Result<Vec<String>> {
             let min = config.gates.min_registered_ratio;
             if metrics["score"] < min {
                 return Err(Error::Gate(format!("{}: score below {min}", self.name)));
             }
-            Ok(())
+            let max = config.gates.max_masked_fraction;
+            Ok(match metrics["masked"] > max {
+                true => vec![format!("masked above {max}")],
+                false => Vec::new(),
+            })
         }
     }
 
@@ -260,12 +315,14 @@ mod tests {
 
     fn env() -> Env {
         let root = tempfile::tempdir().unwrap();
-        let config = Config::load(
+        let mut config = Config::load(
             &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../configs/reposalmi-laajasalo.toml"),
         )
         .unwrap();
+        config.dataset.input = root.path().join("input.mp4");
+        fs::write(&config.dataset.input, b"video").unwrap();
         let tools = Tools::from_table(toml::Table::new()).unwrap();
-        let ctx = RunContext::new(config, tools, root.path());
+        let ctx = RunContext::new(config, tools, &root.path().join("work")).unwrap();
         Env { _root: root, ctx }
     }
 
@@ -299,6 +356,7 @@ mod tests {
                 Event::Running { stage, .. } => format!("run {stage}"),
                 Event::Finished(r) if r.cached => format!("cached {}", r.stage),
                 Event::Finished(r) => format!("done {}", r.stage),
+                Event::Warning { stage, message } => format!("warn {stage}: {message}"),
             })
         });
         (result, events)
@@ -455,11 +513,115 @@ mod tests {
         );
         assert_eq!(m.tools.len(), 1);
         assert_eq!(m.tools[0].tool, "sh");
+        assert_eq!(
+            m.tools[0].log,
+            Path::new("logs/echo.log"),
+            "relative to the output"
+        );
+        assert_eq!(m.source, None, "only root stages record the source");
         assert_eq!(m.metrics, b.metrics);
         assert_eq!(
             b.fingerprint,
             Fingerprint::compute("b", &m.config, &[a.fingerprint], "1")
         );
+    }
+
+    #[test]
+    fn root_stages_take_the_input_content_as_upstream() {
+        let e = env();
+        let s = stages();
+        let a = go(&e.ctx, &s, &["a"]).0.unwrap().remove(0);
+        let m = lookup(&a.dir, &a.fingerprint).unwrap().unwrap();
+        let input = &e.ctx.config.dataset.input;
+        let source = Fingerprint::of_content(input).unwrap();
+        assert_eq!(
+            m.source,
+            Some(Source {
+                path: input.clone(),
+                fingerprint: source
+            })
+        );
+        assert_eq!(
+            a.fingerprint,
+            Fingerprint::compute("a", &m.config, &[source], "1")
+        );
+    }
+
+    #[test]
+    fn input_content_change_reruns_everything_and_reverting_hits_the_cache() {
+        let e = env();
+        let s = stages();
+        go(&e.ctx, &s, &[]).0.unwrap();
+        fs::write(&e.ctx.config.dataset.input, b"another capture").unwrap();
+        let (_, events) = go(&e.ctx, &s, &[]);
+        assert!(
+            events.iter().all(|e| !e.starts_with("cached")),
+            "{events:?}"
+        );
+        assert_eq!(runs(&s), [2, 2, 2, 2]);
+        fs::write(&e.ctx.config.dataset.input, b"video").unwrap();
+        let (_, events) = go(&e.ctx, &s, &[]);
+        assert!(events.iter().all(|e| e.starts_with("cached")), "{events:?}");
+    }
+
+    #[test]
+    fn missing_input_fails_before_any_stage_runs() {
+        let e = env();
+        let s = stages();
+        fs::remove_file(&e.ctx.config.dataset.input).unwrap();
+        let (result, events) = go(&e.ctx, &s, &[]);
+        let err = result.unwrap_err();
+        assert!(
+            matches!(&err, Error::Io { path, .. } if *path == e.ctx.config.dataset.input),
+            "{err}"
+        );
+        assert!(events.is_empty());
+        assert_eq!(runs(&s), [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn warnings_follow_current_thresholds_on_fresh_and_cached_runs() {
+        let mut e = env();
+        let s = stages();
+        s[3].masked.set(0.8);
+        let (results, events) = go(&e.ctx, &s, &["d"]);
+        assert_eq!(
+            events,
+            [
+                "run a",
+                "done a",
+                "run d",
+                "done d",
+                "warn d: masked above 0.7"
+            ]
+        );
+        assert_eq!(
+            by_name(&results.unwrap(), "d").warnings,
+            ["masked above 0.7"]
+        );
+
+        let (_, events) = go(&e.ctx, &s, &["d"]);
+        assert_eq!(events, ["cached a", "cached d", "warn d: masked above 0.7"]);
+        e.ctx.config.gates.max_masked_fraction = 0.9;
+        let (results, events) = go(&e.ctx, &s, &["d"]);
+        assert_eq!(events, ["cached a", "cached d"]);
+        assert!(results.unwrap().iter().all(|r| r.warnings.is_empty()));
+    }
+
+    #[test]
+    fn tool_log_outside_the_output_is_an_error_and_publishes_nothing() {
+        let e = env();
+        let s = stages();
+        s[0].log_outside.set(true);
+        let (result, _) = go(&e.ctx, &s, &["a"]);
+        let err = result.unwrap_err();
+        assert!(
+            matches!(&err, Error::Cache(m) if m.contains("outside")),
+            "{err}"
+        );
+        s[0].log_outside.set(false);
+        let (_, events) = go(&e.ctx, &s, &["a"]);
+        assert_eq!(events, ["discard a", "run a", "done a"]);
     }
 
     #[test]

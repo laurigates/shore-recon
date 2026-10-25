@@ -5,9 +5,12 @@
 //! TOML files does not affect the result.
 
 use std::fmt;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+use crate::error::io_error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Fingerprint([u8; 32]);
@@ -38,10 +41,53 @@ impl Fingerprint {
         Self(*h.finalize().as_bytes())
     }
 
+    /// Content identity of `path`: blake3 of a file's bytes, or for a
+    /// directory, of every file below it (relative path and content hash)
+    /// in sorted order. Entries whose names start with `.` are skipped.
+    pub fn of_content(path: &Path) -> crate::Result<Self> {
+        let mut h = blake3::Hasher::new();
+        if std::fs::metadata(path).map_err(io_error(path))?.is_dir() {
+            h.update(b"dir\0");
+            let mut files = Vec::new();
+            files_below(path, Path::new(""), &mut files)?;
+            files.sort();
+            for rel in &files {
+                let name = rel.as_os_str().as_encoded_bytes();
+                h.update(&(name.len() as u64).to_le_bytes());
+                h.update(name);
+                h.update(&Self::of_content(&path.join(rel))?.0);
+            }
+        } else {
+            h.update(b"file\0");
+            let file = std::fs::File::open(path).map_err(io_error(path))?;
+            h.update_reader(file).map_err(io_error(path))?;
+        }
+        Ok(Self(*h.finalize().as_bytes()))
+    }
+
     /// Short form used in cache directory names.
     pub fn short(&self) -> String {
         self.to_string()[..16].to_owned()
     }
+}
+
+/// Files below `root/rel`, relative to `root`, skipping `.` entries.
+fn files_below(root: &Path, rel: &Path, out: &mut Vec<PathBuf>) -> crate::Result<()> {
+    let dir = root.join(rel);
+    for entry in std::fs::read_dir(&dir).map_err(io_error(&dir))? {
+        let name = entry.map_err(io_error(&dir))?.file_name();
+        if name.as_encoded_bytes().starts_with(b".") {
+            continue;
+        }
+        let rel = rel.join(&name);
+        let path = root.join(&rel);
+        if std::fs::metadata(&path).map_err(io_error(&path))?.is_dir() {
+            files_below(root, &rel, out)?;
+        } else {
+            out.push(rel);
+        }
+    }
+    Ok(())
 }
 
 impl FromStr for Fingerprint {
@@ -86,6 +132,70 @@ impl fmt::Display for Fingerprint {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use std::fs;
+
+    use crate::Error;
+
+    fn content(path: &Path) -> Fingerprint {
+        Fingerprint::of_content(path).unwrap()
+    }
+
+    #[test]
+    fn file_content_identity_ignores_the_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a.mp4"), dir.path().join("b.mp4"));
+        fs::write(&a, b"frames").unwrap();
+        fs::write(&b, b"frames").unwrap();
+        assert_eq!(content(&a), content(&b));
+        fs::write(&b, b"framez").unwrap();
+        assert_ne!(content(&a), content(&b));
+    }
+
+    #[test]
+    fn directory_identity_covers_names_nesting_and_content_but_not_dotfiles() {
+        let root = tempfile::tempdir().unwrap();
+        let tree = |name: &str, files: &[(&str, &str)]| {
+            let dir = root.path().join(name);
+            for (rel, body) in files {
+                let path = dir.join(rel);
+                fs::create_dir_all(path.parent().unwrap()).unwrap();
+                fs::write(path, body).unwrap();
+            }
+            content(&dir)
+        };
+        let base = tree("base", &[("1.jpg", "x"), ("cam/2.jpg", "y")]);
+        assert_eq!(
+            base,
+            tree("reordered", &[("cam/2.jpg", "y"), ("1.jpg", "x")])
+        );
+        let with_dotfile = [("1.jpg", "x"), ("cam/2.jpg", "y"), (".DS_Store", "z")];
+        assert_eq!(base, tree("dotfile", &with_dotfile));
+        assert_ne!(base, tree("renamed", &[("1.jpg", "x"), ("cam/3.jpg", "y")]));
+        assert_ne!(base, tree("moved", &[("1.jpg", "x"), ("2.jpg", "y")]));
+        assert_ne!(base, tree("edited", &[("1.jpg", "x"), ("cam/2.jpg", "Y")]));
+    }
+
+    #[test]
+    fn a_directory_differs_from_its_only_file() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("d")).unwrap();
+        fs::write(root.path().join("d/f"), b"x").unwrap();
+        assert_ne!(
+            content(&root.path().join("d")),
+            content(&root.path().join("d/f"))
+        );
+    }
+
+    #[test]
+    fn missing_content_path_is_an_io_error() {
+        let root = tempfile::tempdir().unwrap();
+        let missing = root.path().join("nope.mp4");
+        let err = Fingerprint::of_content(&missing).unwrap_err();
+        assert!(
+            matches!(&err, Error::Io { path, .. } if *path == missing),
+            "{err}"
+        );
+    }
 
     fn fp(cfg: &impl Serialize, up: &[Fingerprint], ver: &str) -> Fingerprint {
         Fingerprint::compute("sfm", cfg, up, ver)

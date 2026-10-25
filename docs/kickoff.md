@@ -134,8 +134,8 @@ pub trait Stage {
     fn version(&self, ctx: &RunContext) -> Result<String>;
     /// Write outputs into `out_dir`; return tool records and metrics.
     fn run(&self, ctx: &RunContext, inputs: &Inputs, out_dir: &Path) -> Result<StageRun>;
-    /// Quality gates on the recorded metrics; Err fails the run.
-    fn gate(&self, config: &Config, metrics: &Metrics) -> Result<()>;
+    /// Quality gates on the recorded metrics: Err fails the run, Ok carries warnings.
+    fn gate(&self, config: &Config, metrics: &Metrics) -> Result<Vec<String>>;
 }
 ```
 

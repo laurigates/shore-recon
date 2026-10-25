@@ -1,14 +1,17 @@
 //! Stage output cache (ADR-0004).
 //!
 //! Each stage output lives in `work/<dataset>/<stage>/<fingerprint>/`. Its
-//! `manifest.json` is written last, atomically, and marks the output
-//! complete: a directory without one is an interrupted run.
+//! `manifest.json` is written last, atomically and after the outputs are
+//! flushed to disk, and marks the output complete: a directory without one
+//! is an interrupted run.
 
-use std::path::Path;
+use std::fs::File;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, io_error};
 use crate::fingerprint::Fingerprint;
 use crate::stage::Metrics;
 use crate::tools::ToolRecord;
@@ -21,6 +24,13 @@ pub struct Upstream {
     pub fingerprint: Fingerprint,
 }
 
+/// The dataset input a root stage read, identified by content.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Source {
+    pub path: PathBuf,
+    pub fingerprint: Fingerprint,
+}
+
 /// Lineage and results of one stage output.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -30,6 +40,9 @@ pub struct Manifest {
     pub config: serde_json::Value,
     pub version: String,
     pub upstream: Vec<Upstream>,
+    /// Set for stages without dependencies, which read the dataset input.
+    pub source: Option<Source>,
+    /// Tool logs are relative to the output directory.
     pub tools: Vec<ToolRecord>,
     pub metrics: Metrics,
     pub created_unix: u64,
@@ -56,8 +69,11 @@ pub fn lookup(dir: &Path, fp: &Fingerprint) -> Result<Option<Manifest>> {
     Ok(Some(manifest))
 }
 
-/// Write `manifest` into `dir` atomically (temporary file, then rename).
-pub fn write_manifest(dir: &Path, manifest: &Manifest) -> Result<()> {
+/// Mark the output in `dir` complete: flush its files, then write
+/// `manifest` through a flushed temporary file and a rename, and flush the
+/// directory entries. A crash can then leave no manifest, but never a
+/// truncated one or one over unwritten outputs.
+pub fn publish(dir: &Path, manifest: &Manifest) -> Result<()> {
     // serde_json writes NaN and infinities as null, which would not read back.
     if let Some((name, _)) = manifest.metrics.iter().find(|(_, v)| !v.is_finite()) {
         return Err(Error::Cache(format!(
@@ -65,14 +81,43 @@ pub fn write_manifest(dir: &Path, manifest: &Manifest) -> Result<()> {
             manifest.stage
         )));
     }
+    sync_tree(dir)?;
     let json = serde_json::to_vec_pretty(manifest).expect("manifest serialises to JSON");
     let tmp = dir.join(format!(".{MANIFEST_FILE}.tmp"));
     let path = dir.join(MANIFEST_FILE);
-    std::fs::write(&tmp, json).map_err(|source| Error::Io {
-        path: tmp.clone(),
-        source,
-    })?;
-    std::fs::rename(&tmp, &path).map_err(|source| Error::Io { path, source })
+    let mut file = File::create(&tmp).map_err(io_error(&tmp))?;
+    file.write_all(&json)
+        .and_then(|()| file.sync_all())
+        .map_err(io_error(&tmp))?;
+    std::fs::rename(&tmp, &path).map_err(io_error(&path))?;
+    sync_dir(dir)?;
+    match dir.parent() {
+        Some(parent) => sync_dir(parent),
+        None => Ok(()),
+    }
+}
+
+/// Flush every regular file and directory below `dir`, then `dir` itself.
+fn sync_tree(dir: &Path) -> Result<()> {
+    for entry in std::fs::read_dir(dir).map_err(io_error(dir))? {
+        let entry = entry.map_err(io_error(dir))?;
+        let path = entry.path();
+        let kind = entry.file_type().map_err(io_error(&path))?;
+        if kind.is_dir() {
+            sync_tree(&path)?;
+        } else if kind.is_file() {
+            File::open(&path)
+                .and_then(|f| f.sync_all())
+                .map_err(io_error(&path))?;
+        }
+    }
+    sync_dir(dir)
+}
+
+fn sync_dir(dir: &Path) -> Result<()> {
+    File::open(dir)
+        .and_then(|f| f.sync_all())
+        .map_err(io_error(dir))
 }
 
 #[cfg(test)]
@@ -90,6 +135,10 @@ mod tests {
                 stage: "ingest".into(),
                 fingerprint: Fingerprint::compute("ingest", &0, &[], ""),
             }],
+            source: Some(Source {
+                path: "data/raw/x.mp4".into(),
+                fingerprint: Fingerprint::compute("source", &0, &[], ""),
+            }),
             tools: vec![ToolRecord {
                 tool: "ffmpeg".into(),
                 runtime: Runtime::Native,
@@ -111,13 +160,22 @@ mod tests {
     fn manifest_round_trips() {
         let dir = tempfile::tempdir().unwrap();
         let m = manifest(fp(1));
-        write_manifest(dir.path(), &m).unwrap();
+        publish(dir.path(), &m).unwrap();
         assert_eq!(lookup(dir.path(), &fp(1)).unwrap(), Some(m));
         let names: Vec<_> = std::fs::read_dir(dir.path())
             .unwrap()
             .map(|e| e.unwrap().file_name())
             .collect();
         assert_eq!(names, [MANIFEST_FILE], "no temporary file left behind");
+    }
+
+    #[test]
+    fn publish_flushes_nested_outputs() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("logs")).unwrap();
+        std::fs::write(dir.path().join("logs/ffmpeg.log"), "ok").unwrap();
+        publish(dir.path(), &manifest(fp(1))).unwrap();
+        assert!(lookup(dir.path(), &fp(1)).unwrap().is_some());
     }
 
     #[test]
@@ -131,7 +189,7 @@ mod tests {
     #[test]
     fn manifest_for_another_fingerprint_is_an_error() {
         let dir = tempfile::tempdir().unwrap();
-        write_manifest(dir.path(), &manifest(fp(1))).unwrap();
+        publish(dir.path(), &manifest(fp(1))).unwrap();
         let err = lookup(dir.path(), &fp(2)).unwrap_err();
         assert!(
             matches!(&err, Error::Cache(m) if m.contains(&fp(2).to_string())),
@@ -151,7 +209,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut m = manifest(fp(1));
         m.metrics.insert("ratio".into(), f64::NAN);
-        let err = write_manifest(dir.path(), &m).unwrap_err();
+        let err = publish(dir.path(), &m).unwrap_err();
         assert!(
             matches!(&err, Error::Cache(msg) if msg.contains("ratio")),
             "{err}"
