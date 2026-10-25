@@ -120,8 +120,8 @@ pub struct Tool {
 #[derive(Debug, Clone, Default)]
 pub struct Invocation {
     pub args: Vec<OsString>,
-    /// Absolute directories the tool reads or writes. Containers bind-mount
-    /// each at the same path; native runs ignore them.
+    /// Absolute directories without `..` that the tool reads or writes.
+    /// Containers bind-mount each at the same path; native runs ignore them.
     pub mounts: Vec<PathBuf>,
 }
 
@@ -173,9 +173,12 @@ impl Tool {
             cmd.args(gpu_flag);
         }
         for dir in &inv.mounts {
-            if !dir.is_absolute() || dir.as_os_str().to_string_lossy().contains(':') {
+            let parent = dir
+                .components()
+                .any(|c| c == std::path::Component::ParentDir);
+            if !dir.is_absolute() || parent || dir.as_os_str().to_string_lossy().contains(':') {
                 return Err(Error::Tools(format!(
-                    "{}: mount {} must be an absolute path without ':'",
+                    "{}: mount {} must be an absolute path without '..' or ':'",
                     self.name,
                     dir.display()
                 )));
@@ -379,7 +382,7 @@ mod tests {
     #[test]
     fn mounts_must_be_absolute_and_colon_free() {
         let tool = container(Runtime::Docker, false);
-        for bad in ["work/a", "/work/a:b"] {
+        for bad in ["work/a", "/work/a:b", "/work/x/../a"] {
             let err = tool.command(&Invocation::default().mount(bad)).unwrap_err();
             assert!(matches!(&err, Error::Tools(m) if m.contains(bad)), "{err}");
         }
@@ -478,6 +481,13 @@ mod tests {
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../configs/reposalmi-laajasalo.toml");
         let t = Tools::load(&config, None).unwrap();
         assert_eq!(t.get("ffmpeg").unwrap().spec.runtime, Runtime::Native);
+        let segment = t.get("segment").unwrap().spec;
+        assert_eq!(segment.runtime, Runtime::Docker);
+        let image = segment.image.unwrap();
+        assert!(
+            image.starts_with("ghcr.io/laurigates/shoreline-segmentation@sha256:"),
+            "{image}"
+        );
     }
 
     #[test]

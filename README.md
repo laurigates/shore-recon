@@ -14,9 +14,12 @@ Design and milestones: [docs/kickoff.md](docs/kickoff.md). Decisions:
 
 M1 in progress. Implemented: config loading and merging, stage DAG,
 fingerprinting, `Stage` trait, stage cache and pipeline runner, tool runner
-(native, podman, docker), and the `frames` stage for video input
-([ADR-0005](docs/adr/0005-frames-stage.md)). `run` executes the implemented
-stages; masks and later stages are still to come.
+(native, podman, docker), the `frames` stage for video input
+([ADR-0005](docs/adr/0005-frames-stage.md)), and the `masks` stage on the
+segmentation container ([ADR-0006](docs/adr/0006-masks-segmentation-container.md),
+[ADR-0007](docs/adr/0007-masks-stage-output.md)). `run` executes these; SfM and
+later stages are M2 onwards. The masks stage pulls a private GHCR image, so
+Docker needs `docker login ghcr.io` with a token that has `read:packages`.
 
 The M0 spike ran end to end with the scripts in [`spike/m0/`](spike/m0/README.md),
 driven by `just` (GPU recipes need a CUDA host: see `.env.example`). Findings:
