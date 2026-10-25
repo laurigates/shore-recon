@@ -283,6 +283,7 @@ mod tests {
                     program: "sh".into(),
                     image: None,
                     gpu: false,
+                    remote: None,
                 },
             };
             let record = echo.run(&Invocation::new(["-c", "echo ok"]), &log)?;

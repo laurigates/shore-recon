@@ -6,6 +6,14 @@
 #   program = executable (native) or the command inside the image
 #   image   = OCI image pinned by digest (name@sha256:...), containers only
 #   gpu     = pass the host GPUs through, containers only (default false)
+#
+# A container tool can run on another host over ssh (ADR-0009). Only in a host
+# file, never here:
+#
+#   [colmap.remote]
+#   host = "<ssh destination>"
+#   root = "<absolute mirror directory there>"
+#   env  = { APPTAINER_CACHEDIR = "<cache directory there>" }
 
 [ffmpeg]
 runtime = "native"

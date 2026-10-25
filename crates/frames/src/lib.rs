@@ -237,6 +237,7 @@ mod tests {
                 program: "ffmpeg".into(),
                 image: None,
                 gpu: false,
+                remote: None,
             },
         };
         assert_eq!(
