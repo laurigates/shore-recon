@@ -550,6 +550,7 @@ name = "shoreline-sfm"
 version = "0.1.0"
 dependencies = [
  "shoreline-core",
+ "tempfile",
 ]
 
 [[package]]
