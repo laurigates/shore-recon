@@ -73,6 +73,7 @@ flowchart LR
   - Copy the images and normalise EXIF orientation.
   - Preserve EXIF focal length.
 - An optional cap on the long edge of each image, for example 3200 px.
+- Video input is implemented as [ADR-0005](adr/0005-frames-stage.md); near-duplicates are #10 and photo input #23.
 
 ### masks
 

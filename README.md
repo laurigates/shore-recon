@@ -13,9 +13,10 @@ Design and milestones: [docs/kickoff.md](docs/kickoff.md). Decisions:
 ## Status
 
 M1 in progress. Implemented: config loading and merging, stage DAG,
-fingerprinting, `Stage` trait, stage cache and pipeline runner (library
-only), mask path convention, tool runner (native, podman, docker). No stage
-is implemented yet, so `run` does not execute anything.
+fingerprinting, `Stage` trait, stage cache and pipeline runner, tool runner
+(native, podman, docker), and the `frames` stage for video input
+([ADR-0005](docs/adr/0005-frames-stage.md)). `run` executes the implemented
+stages; masks and later stages are still to come.
 
 The M0 spike ran end to end with the scripts in [`spike/m0/`](spike/m0/README.md),
 driven by `just` (GPU recipes need a CUDA host: see `.env.example`). Findings:
@@ -27,8 +28,15 @@ driven by `just` (GPU recipes need a CUDA host: see `.env.example`). Findings:
 cargo run -- config configs/reposalmi-laajasalo.toml   # resolved config
 cargo run -- plan   configs/reposalmi-laajasalo.toml   # stage order
 cargo run -- tools  configs/reposalmi-laajasalo.toml   # resolved tools
-cargo run -- run    configs/reposalmi-laajasalo.toml   # not implemented yet
+cargo run --release -- run configs/reposalmi-laajasalo.toml   # implemented stages
+cargo run --release -- run --stage frames configs/reposalmi-laajasalo.toml
 ```
+
+`run` caches each stage's output under `work/<dataset>/<stage>/<fingerprint>/`
+(`--work` or `SHORELINE_WORK` moves the root); a rerun with an unchanged
+config and input is a cache hit ([ADR-0004](docs/adr/0004-stage-cache-and-manifest.md)).
+Relative paths in a config, such as `dataset.input`, are resolved against the
+working directory, so run from the repository root.
 
 Dataset configs are deep-merged over `configs/defaults.toml` in the same
 directory. Unknown keys are rejected.

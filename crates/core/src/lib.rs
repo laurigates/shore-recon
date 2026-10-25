@@ -14,5 +14,5 @@ pub mod tools;
 pub use config::Config;
 pub use error::{Error, Result};
 pub use fingerprint::Fingerprint;
-pub use stage::Stage;
+pub use stage::{RunContext, Stage};
 pub use tools::{Tool, Tools};
