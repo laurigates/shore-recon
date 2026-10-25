@@ -45,6 +45,85 @@ pub struct ToolSpec {
     /// Pass the host GPUs through; container runtimes only.
     #[serde(default)]
     pub gpu: bool,
+    /// Run the container on another host over ssh (ADR-0009); container runtimes only.
+    pub remote: Option<Remote>,
+}
+
+/// Where a remote container runs. Each mount `/p` is mirrored to `<root>/p`
+/// there and bound at `/p`, so tool arguments stay host paths (ADR-0009).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Remote {
+    /// ssh destination, as for `ssh <host>`.
+    pub host: String,
+    /// Absolute directory on the remote host that holds the mirrored mounts.
+    pub root: PathBuf,
+    /// Environment for the remote command, such as `APPTAINER_CACHEDIR`.
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+}
+
+/// rsync passes remote paths to the remote shell unquoted, so remote paths are
+/// limited to characters no shell treats specially.
+fn shell_safe(path: &Path) -> bool {
+    path.to_str().is_some_and(|s| {
+        s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/._-+@".contains(c))
+    })
+}
+
+/// `s` as one single-quoted word, for POSIX shells and zsh.
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+/// `ssh -o BatchMode=yes <host> -- <words, each quoted>`.
+fn ssh(host: &str, words: impl IntoIterator<Item = String>) -> Command {
+    let line = words
+        .into_iter()
+        .map(|w| sh_quote(&w))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut cmd = Command::new("ssh");
+    cmd.args(["-o", "BatchMode=yes", host, "--"]).arg(line);
+    cmd
+}
+
+/// The rsync calls around one remote run (ADR-0009, decision 2).
+#[derive(Debug)]
+pub struct Sync {
+    /// Creates the mirror directories on the remote host.
+    pub prepare: Command,
+    /// Mirrors each mount to the remote host, deleting stale remote files.
+    pub push: Vec<Command>,
+    /// Copies each mirrored mount back.
+    pub pull: Vec<Command>,
+}
+
+impl Remote {
+    fn validate(&self) -> std::result::Result<(), &'static str> {
+        if self.host.is_empty() || self.host.starts_with('-') {
+            return Err("remote host must be an ssh destination");
+        }
+        // `--delete` pushes into `<root>/p`, so `/` would mirror onto the host's own `/p`.
+        if !self.root.is_absolute() || !shell_safe(&self.root) || self.root.parent().is_none() {
+            return Err("remote root must be an absolute path of [A-Za-z0-9/._-+@], not /");
+        }
+        let key_ok = |k: &str| {
+            k.chars().next().is_some_and(|c| !c.is_ascii_digit())
+                && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        };
+        if !self.env.keys().all(|k| key_ok(k)) {
+            return Err("remote env names must be [A-Za-z_][A-Za-z0-9_]*");
+        }
+        Ok(())
+    }
+
+    /// `/p` mirrored under the remote root.
+    fn mirror(&self, dir: &Path) -> PathBuf {
+        self.root
+            .join(dir.strip_prefix("/").expect("mounts are absolute"))
+    }
 }
 
 impl ToolSpec {
@@ -52,6 +131,14 @@ impl ToolSpec {
         let invalid = |msg: &str| Err(Error::Tools(format!("{name}: {msg}")));
         if self.program.is_empty() {
             return invalid("program must not be empty");
+        }
+        if let Some(remote) = &self.remote {
+            if self.runtime == Runtime::Native {
+                return invalid("remote is only valid for container runtimes");
+            }
+            if let Err(msg) = remote.validate() {
+                return invalid(msg);
+            }
         }
         match (self.runtime, &self.image) {
             (Runtime::Native, Some(_)) => invalid("image is only valid for container runtimes"),
@@ -152,13 +239,17 @@ pub struct ToolRecord {
     pub tool: String,
     pub runtime: Runtime,
     pub image: Option<String>,
+    /// ssh destination for remote runs (ADR-0009).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
     pub argv: Vec<String>,
     pub seconds: f64,
     pub log: PathBuf,
 }
 
 impl Tool {
-    /// The process to spawn for `inv`. Nothing is executed.
+    /// The process to spawn for `inv`. Nothing is executed. A remote tool's
+    /// process is the ssh call; see [`Tool::sync`] for its file transfers.
     pub fn command(&self, inv: &Invocation) -> Result<Command> {
         self.spec.validate(&self.name)?;
         let (engine, prefix, gpu_flag, bind_flag): (_, &[&str], &[&str], _) =
@@ -177,16 +268,91 @@ impl Tool {
                 Runtime::Docker => ("docker", &["run", "--rm"], &["--gpus", "all"], "-v"),
                 Runtime::Apptainer => ("apptainer", &["exec"], &["--nv"], "--bind"),
             };
+        self.check_mounts(inv)?;
+        let remote = self.spec.remote.as_ref();
+        let mut words: Vec<OsString> = vec![engine.into()];
+        words.extend(prefix.iter().map(OsString::from));
+        if self.spec.gpu {
+            words.extend(gpu_flag.iter().map(OsString::from));
+        }
+        for dir in &inv.mounts {
+            let mut bind = match remote {
+                Some(remote) => remote.mirror(dir).into_os_string(),
+                None => dir.as_os_str().to_owned(),
+            };
+            bind.push(":");
+            bind.push(dir);
+            words.push(bind_flag.into());
+            words.push(bind);
+        }
+        let image = self.spec.image.as_deref().expect("validated above");
+        words.push(match self.spec.runtime {
+            Runtime::Apptainer => format!("docker://{image}").into(),
+            _ => image.into(),
+        });
+        words.push(self.spec.program.clone().into());
+        words.extend(inv.args.iter().cloned());
+
+        let Some(remote) = remote else {
+            let mut cmd = Command::new(&words[0]);
+            cmd.args(&words[1..]);
+            return Ok(cmd);
+        };
+        let env = (!remote.env.is_empty()).then(|| "env".to_owned());
+        let vars = remote.env.iter().map(|(k, v)| format!("{k}={v}"));
+        let words = words.iter().map(|w| w.to_string_lossy().into_owned());
+        Ok(ssh(&remote.host, env.into_iter().chain(vars).chain(words)))
+    }
+
+    /// The file transfers around a remote run of `inv`; `None` for local tools.
+    pub fn sync(&self, inv: &Invocation) -> Result<Option<Sync>> {
+        self.spec.validate(&self.name)?;
+        let Some(remote) = &self.spec.remote else {
+            return Ok(None);
+        };
+        self.check_mounts(inv)?;
+        let slash = |p: &Path| {
+            let mut s = p.as_os_str().to_owned();
+            s.push("/");
+            s
+        };
+        let at_host = |p: &Path| {
+            let mut s = OsString::from(format!("{}:", remote.host));
+            s.push(slash(p));
+            s
+        };
+        let rsync = |args: &[&str], from: OsString, to: OsString| {
+            let mut cmd = Command::new("rsync");
+            cmd.args(args).arg(from).arg(to);
+            cmd
+        };
+        let mirrors = inv.mounts.iter().map(|d| (d, remote.mirror(d)));
+        let mkdir = ["mkdir", "-p"].map(String::from).into_iter().chain(
+            mirrors
+                .clone()
+                .map(|(_, m)| m.to_string_lossy().into_owned()),
+        );
+        Ok(Some(Sync {
+            prepare: ssh(&remote.host, mkdir),
+            push: mirrors
+                .clone()
+                .map(|(d, m)| rsync(&["-a", "--delete"], slash(d), at_host(&m)))
+                .collect(),
+            pull: mirrors
+                .map(|(d, m)| rsync(&["-a"], at_host(&m), slash(d)))
+                .collect(),
+        }))
+    }
+
+    /// Mounts must be absolute, free of `..`, and expressible in the bind flag;
+    /// remote mounts must also be shell-safe.
+    fn check_mounts(&self, inv: &Invocation) -> Result<()> {
         // `--bind` takes a comma-separated list, so a comma would split the path.
         let forbidden: &[char] = match self.spec.runtime {
             Runtime::Apptainer => &[':', ','],
             _ => &[':'],
         };
-        let mut cmd = Command::new(engine);
-        cmd.args(prefix);
-        if self.spec.gpu {
-            cmd.args(gpu_flag);
-        }
+        let remote = self.spec.remote.is_some();
         for dir in &inv.mounts {
             let parent = dir
                 .components()
@@ -204,24 +370,23 @@ impl Tool {
                         .join(" or ")
                 )));
             }
-            let mut bind = dir.as_os_str().to_owned();
-            bind.push(":");
-            bind.push(dir);
-            cmd.arg(bind_flag).arg(bind);
+            if remote && !shell_safe(dir) {
+                return Err(Error::Tools(format!(
+                    "{}: remote mount {} must use only [A-Za-z0-9/._-+@]",
+                    self.name,
+                    dir.display()
+                )));
+            }
         }
-        let image = self.spec.image.as_deref().expect("validated above");
-        match self.spec.runtime {
-            Runtime::Apptainer => cmd.arg(format!("docker://{image}")),
-            _ => cmd.arg(image),
-        };
-        cmd.arg(&self.spec.program).args(&inv.args);
-        Ok(cmd)
+        Ok(())
     }
 
     /// Run `inv` with stdin closed, writing the command line, stdout and
-    /// stderr to `log`. A non-zero exit is an error that names the log.
+    /// stderr to `log`. A remote run also logs its transfers: push, run, pull.
+    /// A non-zero exit of any step is an error that names the log.
     pub fn run(&self, inv: &Invocation, log: &Path) -> Result<ToolRecord> {
         let mut cmd = self.command(inv)?;
+        let sync = self.sync(inv)?;
         let argv = argv(&cmd);
         let io = |path: &Path| {
             let path = path.to_owned();
@@ -230,31 +395,46 @@ impl Tool {
         if let Some(dir) = log.parent() {
             std::fs::create_dir_all(dir).map_err(io(dir))?;
         }
-        let mut stdout = File::create(log).map_err(io(log))?;
-        writeln!(stdout, "$ {}", argv.join(" ")).map_err(io(log))?;
-        let stderr = stdout.try_clone().map_err(io(log))?;
+        let file = File::create(log).map_err(io(log))?;
+        let step = |cmd: &mut Command| -> Result<()> {
+            let argv = self::argv(cmd);
+            let mut stdout = file.try_clone().map_err(io(log))?;
+            writeln!(stdout, "$ {}", argv.join(" ")).map_err(io(log))?;
+            let stderr = stdout.try_clone().map_err(io(log))?;
+            let status = cmd
+                .stdin(Stdio::null())
+                .stdout(stdout)
+                .stderr(stderr)
+                .status()
+                .map_err(|source| Error::Spawn {
+                    program: argv[0].clone(),
+                    source,
+                })?;
+            if !status.success() {
+                return Err(Error::ToolFailed {
+                    tool: self.name.clone(),
+                    status,
+                    log: log.to_owned(),
+                });
+            }
+            Ok(())
+        };
 
         let start = Instant::now();
-        let status = cmd
-            .stdin(Stdio::null())
-            .stdout(stdout)
-            .stderr(stderr)
-            .status()
-            .map_err(|source| Error::Spawn {
-                program: argv[0].clone(),
-                source,
-            })?;
-        if !status.success() {
-            return Err(Error::ToolFailed {
-                tool: self.name.clone(),
-                status,
-                log: log.to_owned(),
-            });
+        match sync {
+            None => step(&mut cmd)?,
+            Some(mut sync) => {
+                step(&mut sync.prepare)?;
+                sync.push.iter_mut().try_for_each(&step)?;
+                step(&mut cmd)?;
+                sync.pull.iter_mut().try_for_each(&step)?;
+            }
         }
         Ok(ToolRecord {
             tool: self.name.clone(),
             runtime: self.spec.runtime,
             image: self.spec.image.clone(),
+            host: self.spec.remote.as_ref().map(|r| r.host.clone()),
             argv,
             seconds: start.elapsed().as_secs_f64(),
             log: log.to_owned(),
@@ -319,6 +499,7 @@ mod tests {
                 program: program.into(),
                 image: None,
                 gpu: false,
+                remote: None,
             },
         }
     }
@@ -331,6 +512,7 @@ mod tests {
                 program: "colmap".into(),
                 image: Some(IMAGE.into()),
                 gpu,
+                remote: None,
             },
         }
     }
@@ -442,6 +624,156 @@ mod tests {
             .unwrap();
     }
 
+    fn remote(mut tool: Tool) -> Tool {
+        tool.spec.remote = Some(Remote {
+            host: "gpu".into(),
+            root: "/srv/mirror".into(),
+            env: BTreeMap::from([("APPTAINER_CACHEDIR".into(), "/srv/cache".into())]),
+        });
+        tool
+    }
+
+    #[test]
+    fn remote_runs_the_container_over_ssh_with_mirrored_binds() {
+        let inv = Invocation::new(["help", "it's"]).mount("/work/a");
+        let cmd = remote(container(Runtime::Apptainer, true))
+            .command(&inv)
+            .unwrap();
+        let remote_cmd = format!(
+            "'env' 'APPTAINER_CACHEDIR=/srv/cache' 'apptainer' 'exec' '--nv' \
+             '--bind' '/srv/mirror/work/a:/work/a' 'docker://{IMAGE}' 'colmap' 'help' 'it'\\''s'"
+        );
+        assert_eq!(
+            argv(&cmd),
+            ["ssh", "-o", "BatchMode=yes", "gpu", "--", &remote_cmd]
+        );
+    }
+
+    #[test]
+    fn remote_without_env_has_no_env_prefix() {
+        let mut tool = remote(container(Runtime::Docker, false));
+        tool.spec.remote.as_mut().unwrap().env.clear();
+        let cmd = tool.command(&Invocation::new(["help"])).unwrap();
+        assert_eq!(
+            argv(&cmd).last().unwrap(),
+            &format!("'docker' 'run' '--rm' '{IMAGE}' 'colmap' 'help'")
+        );
+    }
+
+    #[test]
+    fn remote_sync_mirrors_each_mount_both_ways() {
+        let inv = Invocation::new(["help"]).mount("/work/a").mount("/data");
+        let sync = remote(container(Runtime::Apptainer, false))
+            .sync(&inv)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            argv(&sync.prepare),
+            [
+                "ssh",
+                "-o",
+                "BatchMode=yes",
+                "gpu",
+                "--",
+                "'mkdir' '-p' '/srv/mirror/work/a' '/srv/mirror/data'"
+            ]
+        );
+        let argvs = |cmds: &[Command]| cmds.iter().map(argv).collect::<Vec<_>>();
+        assert_eq!(
+            argvs(&sync.push),
+            [
+                [
+                    "rsync",
+                    "-a",
+                    "--delete",
+                    "/work/a/",
+                    "gpu:/srv/mirror/work/a/"
+                ],
+                ["rsync", "-a", "--delete", "/data/", "gpu:/srv/mirror/data/"],
+            ]
+        );
+        assert_eq!(
+            argvs(&sync.pull),
+            [
+                ["rsync", "-a", "gpu:/srv/mirror/work/a/", "/work/a/"],
+                ["rsync", "-a", "gpu:/srv/mirror/data/", "/data/"],
+            ]
+        );
+        assert!(
+            container(Runtime::Apptainer, false)
+                .sync(&inv)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn remote_mounts_must_be_shell_safe() {
+        // rsync hands remote paths to the remote shell unquoted.
+        let tool = remote(container(Runtime::Apptainer, false));
+        for bad in ["/work/a b", "/work/$x", "/work/a'b"] {
+            let inv = Invocation::default().mount(bad);
+            let err = tool.command(&inv).unwrap_err();
+            assert!(matches!(&err, Error::Tools(m) if m.contains(bad)), "{err}");
+            assert!(tool.sync(&inv).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn remote_spec_validation() {
+        let base = format!("runtime = \"apptainer\"\nprogram = \"x\"\nimage = \"{IMAGE}\"");
+        for (body, needle) in [
+            (
+                "runtime = \"native\"\nprogram = \"x\"\n[x.remote]\nhost = \"h\"\nroot = \"/r\""
+                    .to_owned(),
+                "remote",
+            ),
+            (
+                format!("{base}\n[x.remote]\nhost = \"\"\nroot = \"/r\""),
+                "host",
+            ),
+            (
+                format!("{base}\n[x.remote]\nhost = \"h\"\nroot = \"r\""),
+                "root",
+            ),
+            (
+                format!("{base}\n[x.remote]\nhost = \"h\"\nroot = \"/r x\""),
+                "root",
+            ),
+            (
+                format!("{base}\n[x.remote]\nhost = \"h\"\nroot = \"/\""),
+                "root",
+            ),
+            (format!("{base}\n[x.remote]\nhost = \"h\""), "root"),
+            (
+                format!("{base}\n[x.remote]\nhost = \"h\"\nroot = \"/r\"\nport = 22"),
+                "port",
+            ),
+            (
+                format!(
+                    "{base}\n[x.remote]\nhost = \"h\"\nroot = \"/r\"\nenv = {{ \"A B\" = \"1\" }}"
+                ),
+                "env",
+            ),
+        ] {
+            let err = tools_err(&format!("[x]\n{body}\n"));
+            assert!(err.contains(needle), "{body:?}: {err}");
+        }
+        let t = tools(&format!(
+            "[x]\n{base}\n[x.remote]\nhost = \"h\"\nroot = \"/r\"\nenv = {{ APPTAINER_CACHEDIR = \"/r/c\" }}\n"
+        ))
+        .unwrap();
+        assert_eq!(t.get("x").unwrap().spec.remote.unwrap().host, "h");
+    }
+
+    #[test]
+    fn tool_records_without_a_host_still_parse() {
+        let json = r#"{"tool":"x","runtime":"native","image":null,"argv":["x"],"seconds":1.0,"log":"x.log"}"#;
+        let rec: ToolRecord = serde_json::from_str(json).unwrap();
+        assert_eq!(rec.host, None);
+        assert!(!serde_json::to_string(&rec).unwrap().contains("host"));
+    }
+
     #[test]
     fn container_without_gpu_has_no_gpu_flag() {
         let cmd = container(Runtime::Docker, false)
@@ -523,6 +855,7 @@ mod tests {
                 program: "/opt/colmap/bin/colmap".into(),
                 image: None,
                 gpu: false,
+                remote: None,
             }
         );
         assert_eq!(t.get("ffmpeg").unwrap().spec.runtime, Runtime::Native);
@@ -653,6 +986,47 @@ mod tests {
             assert_eq!(rec.runtime, Runtime::Apptainer);
             let text = std::fs::read_to_string(&log).unwrap();
             assert!(text.contains("COLMAP"), "{text}");
+        }
+
+        /// Needs `SHORELINE_TEST_REMOTE_HOST` (ssh target with apptainer and
+        /// rsync) and `SHORELINE_TEST_REMOTE_ROOT` (mirror directory there);
+        /// `SHORELINE_TEST_REMOTE_CACHE` sets the remote `APPTAINER_CACHEDIR`.
+        #[test]
+        fn remote_apptainer_reads_and_writes_mirrored_mounts() {
+            let var = |k: &str| std::env::var(k).unwrap_or_else(|_| panic!("{k} is not set"));
+            let mut tool = container(Runtime::Apptainer, false);
+            tool.spec.program = "sh".into();
+            tool.spec.remote = Some(Remote {
+                host: var("SHORELINE_TEST_REMOTE_HOST"),
+                root: var("SHORELINE_TEST_REMOTE_ROOT").into(),
+                env: std::env::var("SHORELINE_TEST_REMOTE_CACHE")
+                    .map(|c| BTreeMap::from([("APPTAINER_CACHEDIR".to_owned(), c)]))
+                    .unwrap_or_default(),
+            });
+            let dir = tempfile::tempdir().unwrap();
+            let work = dir.path().canonicalize().unwrap();
+            let (input, output) = (work.join("in"), work.join("out"));
+            std::fs::create_dir_all(&input).unwrap();
+            std::fs::create_dir_all(&output).unwrap();
+            std::fs::write(input.join("a.txt"), "hello\n").unwrap();
+            let script = format!(
+                "cat {}/a.txt > {}/b.txt && uname -m",
+                input.display(),
+                output.display()
+            );
+            let log = work.join("remote.log");
+            let inv = Invocation::new(["-c", &script])
+                .mount(&input)
+                .mount(&output);
+            let rec = tool.run(&inv, &log).unwrap();
+            assert_eq!(rec.host, tool.spec.remote.as_ref().map(|r| r.host.clone()));
+            assert_eq!(
+                std::fs::read_to_string(output.join("b.txt")).unwrap(),
+                "hello\n"
+            );
+            let text = std::fs::read_to_string(&log).unwrap();
+            assert!(text.contains("$ rsync -a --delete"), "{text}");
+            assert!(text.contains("x86_64"), "{text}");
         }
     }
 }

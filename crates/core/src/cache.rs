@@ -143,6 +143,7 @@ mod tests {
                 tool: "ffmpeg".into(),
                 runtime: Runtime::Native,
                 image: None,
+                host: None,
                 argv: vec!["ffmpeg".into(), "-version".into()],
                 seconds: 0.5,
                 log: "logs/ffmpeg.log".into(),
