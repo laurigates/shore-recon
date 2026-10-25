@@ -1,31 +1,55 @@
-//! The stage contract. Concrete stages live in their own crates.
+//! The stage contract. Concrete stages live in their own crates; the
+//! [`pipeline`](crate::pipeline) runs them.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::{Config, Fingerprint, Result};
+use crate::error::io_error;
+use crate::tools::ToolRecord;
+use crate::{Config, Fingerprint, Result, Tools};
 
-/// Paths produced by upstream stages, keyed by stage name.
+/// Outputs of the stages a stage depends on, keyed by stage name. Their
+/// directories are absolute.
 pub type Inputs = BTreeMap<&'static str, StageOutput>;
 
 /// Scalar metrics reported by a stage and checked against gates.
 pub type Metrics = BTreeMap<String, f64>;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct StageOutput {
     pub fingerprint: Fingerprint,
     pub dir: PathBuf,
+}
+
+/// What a stage run produced besides its files; recorded in the manifest.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct StageRun {
+    pub tools: Vec<ToolRecord>,
+    pub metrics: Metrics,
 }
 
 /// Per-run context shared by all stages.
 #[derive(Debug)]
 pub struct RunContext {
     pub config: Config,
+    pub tools: Tools,
     /// `work/<dataset>/`
     pub work_dir: PathBuf,
 }
 
 impl RunContext {
+    /// Context whose cache lives under `work_root/<dataset name>/`, made
+    /// absolute so stages can bind-mount their directories into containers.
+    pub fn new(config: Config, tools: Tools, work_root: &Path) -> Result<Self> {
+        let work_root = std::path::absolute(work_root).map_err(io_error(work_root))?;
+        let work_dir = work_root.join(&config.dataset.name);
+        Ok(Self {
+            config,
+            tools,
+            work_dir,
+        })
+    }
+
     /// Cache directory: `work/<dataset>/<stage>/<fingerprint>/`.
     pub fn stage_dir(&self, stage: &str, fp: &Fingerprint) -> PathBuf {
         self.work_dir.join(stage).join(fp.short())
@@ -35,10 +59,40 @@ impl RunContext {
 pub trait Stage {
     fn name(&self) -> &'static str;
     fn deps(&self) -> &[&'static str];
-    /// `hash(stage config, upstream fingerprints, tool version)`
-    fn fingerprint(&self, ctx: &RunContext, inputs: &Inputs) -> Fingerprint;
-    /// Write outputs into `out_dir`.
-    fn run(&self, ctx: &RunContext, inputs: &Inputs, out_dir: &Path) -> Result<()>;
-    /// Quality gates; `Err` fails the run.
-    fn check(&self, ctx: &RunContext, out_dir: &Path) -> Result<Metrics>;
+    /// Config that determines the output, usually the stage's own section.
+    /// The pipeline fingerprints the content of `dataset.input` itself.
+    fn config(&self, config: &Config) -> serde_json::Value;
+    /// Everything else that determines the output: the implementation
+    /// revision, the versions of the tools the stage runs, and content hashes
+    /// of other files it reads by path (for example model weights).
+    fn version(&self, ctx: &RunContext) -> Result<String>;
+    /// Write outputs into `out_dir`, which is absolute, exists and is empty.
+    /// Tool logs must be written below it.
+    fn run(&self, ctx: &RunContext, inputs: &Inputs, out_dir: &Path) -> Result<StageRun>;
+    /// Quality gates on the recorded metrics: `Err` fails the run, `Ok`
+    /// carries warnings. Evaluated on every run, cached or not, so changed
+    /// thresholds apply to cached outputs.
+    fn gate(&self, config: &Config, metrics: &Metrics) -> Result<Vec<String>> {
+        let _ = (config, metrics);
+        Ok(Vec::new())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn work_dir_is_absolute_even_for_a_relative_root() {
+        let config = Config::load(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../configs/reposalmi-laajasalo.toml"),
+        )
+        .unwrap();
+        let tools = Tools::from_table(toml::Table::new()).unwrap();
+        let ctx = RunContext::new(config, tools, Path::new("work")).unwrap();
+        let expected = std::env::current_dir()
+            .unwrap()
+            .join("work/reposalmi-laajasalo");
+        assert_eq!(ctx.work_dir, expected);
+    }
 }

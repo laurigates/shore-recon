@@ -122,17 +122,20 @@ flowchart LR
 ### Workspace
 
 - Rust workspace with an orchestrator CLI built on `clap`.
-- Stages form a DAG. Each stage implements a common trait (sketch):
+- Stages form a DAG. Each stage implements a common trait (`crates/core/src/stage.rs`); the pipeline computes fingerprints from it ([ADR-0004](adr/0004-stage-cache-and-manifest.md)):
 
 ```rust
 pub trait Stage {
     fn name(&self) -> &'static str;
     fn deps(&self) -> &[&'static str];
-    /// hash(stage config, upstream fingerprints, tool version)
-    fn fingerprint(&self, inputs: &Inputs) -> Fingerprint;
-    fn run(&self, ctx: &RunContext, inputs: &Inputs) -> Result<Outputs>;
-    /// Quality gates; Err fails the run.
-    fn check(&self, outputs: &Outputs) -> Result<Metrics>;
+    /// Config that determines the output.
+    fn config(&self, config: &Config) -> serde_json::Value;
+    /// Implementation revision and tool versions.
+    fn version(&self, ctx: &RunContext) -> Result<String>;
+    /// Write outputs into `out_dir`; return tool records and metrics.
+    fn run(&self, ctx: &RunContext, inputs: &Inputs, out_dir: &Path) -> Result<StageRun>;
+    /// Quality gates on the recorded metrics: Err fails the run, Ok carries warnings.
+    fn gate(&self, config: &Config, metrics: &Metrics) -> Result<Vec<String>>;
 }
 ```
 
@@ -147,7 +150,7 @@ pub trait Stage {
 ### Caching
 
 - Stage outputs are stored under `work/<dataset>/<stage>/<fingerprint>/`.
-- A manifest records the lineage of each output.
+- A manifest records the lineage of each output. It is written last and marks the output complete; gates are re-evaluated on cached metrics ([ADR-0004](adr/0004-stage-cache-and-manifest.md)).
 
 ### Containers
 

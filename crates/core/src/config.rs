@@ -137,8 +137,35 @@ impl Config {
 
     fn validate(&self) -> Result<()> {
         let invalid = |msg: &str| Err(Error::Config(msg.to_owned()));
-        if self.dataset.name.is_empty() {
-            return invalid("dataset.name must not be empty");
+        if !is_path_component(&self.dataset.name) {
+            return invalid(
+                "dataset.name must start with a letter or digit and contain only \
+                 letters, digits, '.', '_' and '-' (it names a directory under work/)",
+            );
+        }
+        let numbers = [
+            ("frames.fps", self.frames.fps),
+            ("frames.blur_threshold", self.frames.blur_threshold),
+            ("post.min_component", self.post.min_component),
+            (
+                "gates.min_registered_ratio",
+                self.gates.min_registered_ratio,
+            ),
+            ("gates.max_reproj_error_px", self.gates.max_reproj_error_px),
+            ("gates.min_track_length", self.gates.min_track_length),
+            ("gates.max_masked_fraction", self.gates.max_masked_fraction),
+        ];
+        let height = match self.post.water_plane {
+            WaterPlane::Height(h) => Some(("post.water_plane", h)),
+            WaterPlane::Fit(_) => None,
+        };
+        // Non-finite floats all serialise to JSON null, so they would share a fingerprint.
+        if let Some((key, _)) = numbers
+            .into_iter()
+            .chain(height)
+            .find(|(_, v)| !v.is_finite())
+        {
+            return Err(Error::Config(format!("{key} must be a finite number")));
         }
         if self.frames.fps <= 0.0 {
             return invalid("frames.fps must be positive");
@@ -154,6 +181,14 @@ impl Config {
         }
         Ok(())
     }
+}
+
+/// A single, plain path component: no separators, not `.` or `..`.
+fn is_path_component(name: &str) -> bool {
+    name.starts_with(|c: char| c.is_ascii_alphanumeric())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }
 
 /// Deep-merge `overlay` into `base`. Nested tables merge; other values replace.
@@ -267,5 +302,43 @@ mod tests {
             table("[dataset]\nname = \"x\"\ninput = \"x\"\n[gates]\nmin_registered_ratio = 1.5\n"),
         );
         assert!(matches!(Config::from_table(t), Err(Error::Config(_))));
+    }
+
+    fn with_overrides(overrides: &str) -> Result<Config> {
+        let mut t = read_table(&repo_configs().join(DEFAULTS_FILE)).unwrap();
+        merge(&mut t, table("[dataset]\nname = \"x\"\ninput = \"x\"\n"));
+        merge(&mut t, table(overrides));
+        Config::from_table(t)
+    }
+
+    #[test]
+    fn dataset_name_must_be_one_plain_path_component() {
+        for bad in [
+            "", ".", "..", "../data", "/abs", "a/b", "-x", ".hidden", "a b", "å",
+        ] {
+            let err = with_overrides(&format!("[dataset]\nname = \"{bad}\"\n")).unwrap_err();
+            assert!(err.to_string().contains("dataset.name"), "{bad:?}: {err}");
+        }
+        for good in ["reposalmi-laajasalo", "a.b_c-1", "X1"] {
+            with_overrides(&format!("[dataset]\nname = \"{good}\"\n")).unwrap();
+        }
+    }
+
+    #[test]
+    fn non_finite_numbers_are_rejected() {
+        for (section, key, value) in [
+            ("frames", "fps", "nan"),
+            ("frames", "blur_threshold", "inf"),
+            ("gates", "max_reproj_error_px", "nan"),
+            ("gates", "min_track_length", "-inf"),
+            ("post", "water_plane", "-inf"),
+        ] {
+            let err = with_overrides(&format!("[{section}]\n{key} = {value}\n")).unwrap_err();
+            assert!(
+                err.to_string().contains(&format!("{section}.{key}")),
+                "{key}: {err}"
+            );
+        }
+        with_overrides("[post]\nwater_plane = -0.5\n").unwrap();
     }
 }

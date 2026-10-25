@@ -1,6 +1,12 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
+
+/// `map_err` adapter that attaches `path` to an I/O error.
+pub(crate) fn io_error(path: &Path) -> impl FnOnce(std::io::Error) -> Error + use<> {
+    let path = path.to_owned();
+    move |source| Error::Io { path, source }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -22,6 +28,8 @@ pub enum Error {
     Dag(String),
     #[error("quality gate failed: {0}")]
     Gate(String),
+    #[error("stage cache: {0}")]
+    Cache(String),
     #[error("tools config: {0}")]
     Tools(String),
     #[error("failed to start {program}: {source}")]

@@ -13,8 +13,9 @@ Design and milestones: [docs/kickoff.md](docs/kickoff.md). Decisions:
 ## Status
 
 M1 in progress. Implemented: config loading and merging, stage DAG,
-fingerprinting, `Stage` trait, mask path convention, tool runner (native,
-podman, docker). Stages are not yet executable.
+fingerprinting, `Stage` trait, stage cache and pipeline runner (library
+only), mask path convention, tool runner (native, podman, docker). No stage
+is implemented yet, so `run` does not execute anything.
 
 The M0 spike ran end to end with the scripts in [`spike/m0/`](spike/m0/README.md),
 driven by `just` (GPU recipes need a CUDA host: see `.env.example`). Findings:
@@ -41,7 +42,7 @@ dataset config, with whole tool tables replaced by a host file passed as
 ```
 crates/
   cli/      clap entrypoint (binary: shoreline-recon)
-  core/     config, DAG, fingerprint, Stage trait, tool runner
+  core/     config, DAG, fingerprint, Stage trait, cache, pipeline, tool runner
   frames/   masks/   sfm/   dense/   splat/   post/
 containers/ Containerfiles, pinned versions
 configs/    defaults.toml + per-dataset overrides, tools.toml
