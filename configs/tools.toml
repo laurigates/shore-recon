@@ -10,3 +10,10 @@
 [ffmpeg]
 runtime = "native"
 program = "ffmpeg"
+
+# OneFormer ADE20K Swin-L, CPU, linux/arm64 (ADR-0006): the image the containers
+# workflow pushed from main. Pulling it needs `docker login ghcr.io` (read:packages).
+[segment]
+runtime = "docker"
+program = "segment"
+image   = "ghcr.io/laurigates/shoreline-segmentation@sha256:ea0bab1bc4b964e0ce4cdc51968f09a2d5a1929be6b3e69fba93449c85385f6d"

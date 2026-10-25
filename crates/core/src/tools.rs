@@ -478,6 +478,13 @@ mod tests {
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../configs/reposalmi-laajasalo.toml");
         let t = Tools::load(&config, None).unwrap();
         assert_eq!(t.get("ffmpeg").unwrap().spec.runtime, Runtime::Native);
+        let segment = t.get("segment").unwrap().spec;
+        assert_eq!(segment.runtime, Runtime::Docker);
+        let image = segment.image.unwrap();
+        assert!(
+            image.starts_with("ghcr.io/laurigates/shoreline-segmentation@sha256:"),
+            "{image}"
+        );
     }
 
     #[test]

@@ -54,7 +54,7 @@ flowchart LR
 | Stage  | Input                  | Output                   | Default backend                    | Alternatives                        |
 |--------|------------------------|--------------------------|------------------------------------|-------------------------------------|
 | frames | video / image dir      | `images/*.jpg`           | ffmpeg + blur filter               | —                                   |
-| masks  | images                 | `masks/<image>.png`      | ONNX semantic segmentation (`ort`) | SAM 2 / Grounded-SAM 2 (container)  |
+| masks  | images                 | `masks/<image>.png`      | OneFormer container (ADR-0006)     | ONNX (`ort`, #11); SAM 2 / Grounded-SAM 2 (container) |
 | sfm    | images, masks          | `sparse/0`               | COLMAP (SIFT)                      | GLOMAP; hloc (ALIKED + LightGlue)   |
 | dense  | sparse, images, masks  | textured mesh            | OpenMVS                            | COLMAP MVS                          |
 | splat  | sparse, images, masks  | `splat.ply`              | Brush                              | Nerfstudio splatfacto               |
@@ -82,7 +82,7 @@ flowchart LR
 - **Dilation.** A morphological dilation of configurable width covers reflection boundaries at the waterline.
 - **Temporal refinement.** Optional, for video input. SAM 2 propagation reduces mask flicker between frames.
 - **Debug output.** Mask overlays are written for manual review.
-- The first implemented backend is a pinned container image running OneFormer ADE20K Swin-L on CPU, with the post-processing in Rust ([ADR-0006](adr/0006-masks-segmentation-container.md)); the ONNX backend in the table above waits on #11.
+- The first implemented backend is a pinned container image running OneFormer ADE20K Swin-L on CPU, with the post-processing in Rust ([ADR-0006](adr/0006-masks-segmentation-container.md), [ADR-0007](adr/0007-masks-stage-output.md)); the ONNX backend waits on #11.
 
 ### sfm
 
@@ -167,7 +167,7 @@ shoreline-recon/
 │   ├── cli/            # clap entrypoint
 │   ├── core/           # Stage trait, DAG, cache, ToolRunner, config
 │   ├── frames/
-│   ├── masks/          # Masker trait; onnx, sam2 backends
+│   ├── masks/          # masks stage: container backend; onnx (#11), sam2 later
 │   ├── sfm/            # colmap, glomap backends; model parsing
 │   ├── dense/          # openmvs, colmap-mvs backends
 │   ├── splat/          # brush backend
@@ -197,8 +197,7 @@ blur_threshold = 100.0
 max_long_edge  = 3200
 
 [masks]
-backend   = "onnx"
-model     = "models/seg-ade20k.onnx"
+backend   = "container"
 classes   = ["water", "sea", "river", "lake", "sky", "person", "boat"]
 dilate_px = 8
 temporal  = false
