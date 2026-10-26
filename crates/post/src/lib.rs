@@ -39,7 +39,7 @@ const DENSE: &str = "dense";
 const SPLAT: &str = "splat";
 
 /// Bump when the output changes for the same config and inputs.
-const REVISION: u32 = 1;
+const REVISION: u32 = 2;
 
 /// Lowest-mode peaks below this fraction of the highest are noise.
 const MIN_PEAK: f64 = 0.25;
@@ -66,8 +66,6 @@ pub const MESH_COMPONENTS_REMOVED: &str = "mesh_components_removed";
 pub const MESH_FACES: &str = "mesh_faces";
 pub const MESH_VERTICES: &str = "mesh_vertices";
 pub const DECIMATION_ERROR: &str = "decimation_error";
-/// 1 when seams had to be collapsed to reach `post.target_faces`.
-pub const DECIMATION_ACROSS_SEAMS: &str = "decimation_across_seams";
 pub const VERTICES_BELOW_WATER: &str = "vertices_below_water";
 pub const GAUSSIANS_IN: &str = "gaussians_in";
 pub const GAUSSIANS_BELOW_WATER: &str = "gaussians_below_water";
@@ -268,9 +266,8 @@ impl Stage for Post {
         );
         let (cleaned, removed) = clipped.remove_small_components(config.min_component);
         metric(MESH_COMPONENTS_REMOVED, removed as f64);
-        let (mesh, error, permissive) = cleaned.decimate(config.target_faces as usize);
+        let (mesh, error) = cleaned.decimate(config.target_faces as usize);
         metric(DECIMATION_ERROR, f64::from(error));
-        metric(DECIMATION_ACROSS_SEAMS, f64::from(u8::from(permissive)));
         metric(MESH_FACES, mesh.faces() as f64);
         metric(MESH_VERTICES, mesh.positions.len() as f64);
         metric(VERTICES_BELOW_WATER, mesh.vertices_below(0.0) as f64);
@@ -328,7 +325,7 @@ impl Stage for Post {
         })
     }
 
-    fn gate(&self, _config: &Config, metrics: &Metrics) -> Result<Vec<String>> {
+    fn gate(&self, config: &Config, metrics: &Metrics) -> Result<Vec<String>> {
         let get = |k: &str| metrics.get(k).copied().unwrap_or(0.0);
         let mut failures = Vec::new();
         if get(VERTICES_BELOW_WATER) > 0.0 || get(CENTRES_BELOW_WATER) > 0.0 {
@@ -346,7 +343,17 @@ impl Stage for Post {
             ));
         }
         if failures.is_empty() {
-            Ok(Vec::new())
+            let target = f64::from(config.post.target_faces);
+            let warnings = (get(MESH_FACES) > target)
+                .then(|| {
+                    format!(
+                        "mesh has {} faces, over post.target_faces {target}: texture seams stopped the decimation",
+                        get(MESH_FACES)
+                    )
+                })
+                .into_iter()
+                .collect();
+            Ok(warnings)
         } else {
             Err(stage_error(failures.join("; ")))
         }
@@ -427,5 +434,10 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("12.0°"), "{err}");
+        let warnings = Post
+            .gate(&config, &metrics(&[(MESH_FACES, 743_787.0)]))
+            .unwrap();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("743787 faces"), "{warnings:?}");
     }
 }
