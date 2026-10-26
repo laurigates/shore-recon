@@ -32,6 +32,9 @@ private GHCR packages: Docker needs `docker login ghcr.io`, and Apptainer on the
 GPU host needs `apptainer registry login`, each with a token that has
 `read:packages`.
 
+`just demo` joins each dataset's latest showcase video behind a title card into
+`work/demo/shoreline-recon-v1-demo.mp4`, with chapters and a share copy.
+
 `just overnight` runs every dataset detached and logs to `tmp/runs/`. It can
 stop a GPU service on the host for the run (`SHORELINE_STOP_SERVICE`; see
 `.env.example`).
