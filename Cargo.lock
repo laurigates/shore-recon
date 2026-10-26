@@ -549,6 +549,7 @@ dependencies = [
  "shoreline-masks",
  "shoreline-sfm",
  "shoreline-splat",
+ "shoreline-video",
  "toml",
 ]
 
@@ -565,6 +566,17 @@ dependencies = [
 
 [[package]]
 name = "shoreline-splat"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "shoreline-core",
+ "shoreline-sfm",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
+name = "shoreline-video"
 version = "0.1.0"
 dependencies = [
  "serde_json",
