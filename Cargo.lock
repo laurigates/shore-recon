@@ -542,6 +542,7 @@ dependencies = [
  "shoreline-core",
  "shoreline-frames",
  "shoreline-masks",
+ "shoreline-sfm",
  "toml",
 ]
 
@@ -549,7 +550,10 @@ dependencies = [
 name = "shoreline-sfm"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "shoreline-core",
+ "tempfile",
+ "toml",
 ]
 
 [[package]]

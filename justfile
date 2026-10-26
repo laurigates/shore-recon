@@ -20,6 +20,50 @@ check:
     cargo clippy --workspace --all-targets -- -D warnings
     cargo nextest run
 
+# ---------- pipeline (shoreline-recon) ----------
+
+bin := "target/release/shoreline-recon"
+
+# Build the release binary
+[group('pipeline')]
+build:
+    cargo build --release -p shoreline-recon
+
+# Run one dataset through the implemented stages (SHORELINE_TOOLS selects the host tools file)
+[group('pipeline')]
+run dataset *args: build
+    {{bin}} run configs/{{dataset}}.toml {{args}}
+
+# Run every dataset detached, keeping the Mac awake; survives closing the terminal
+[group('pipeline')]
+overnight *args: build
+    @test -n "${SHORELINE_TOOLS:-}" || { echo "SHORELINE_TOOLS is not set (host tools file, e.g. configs/<host>.local.toml); see .env.example" >&2; exit 1; }
+    mkdir -p tmp/runs
+    log=tmp/runs/overnight-$(date +%Y%m%d-%H%M%S).log; \
+      nohup caffeinate -i just _batch {{args}} > "$log" 2>&1 < /dev/null & \
+      echo "started (pid $!); log: $log; follow with: just overnight-status"
+
+# Show the latest overnight run's markers and its last lines
+[group('pipeline')]
+overnight-status:
+    @log=$(ls -t tmp/runs/overnight-*.log 2>/dev/null | head -1); test -n "$log" || { echo "no overnight log yet"; exit 0; }; \
+      echo "$log"; grep -E '^(BATCH|RUN)-' "$log" || true; echo '---'; tail -5 "$log"
+
+[private]
+_batch *args:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    echo "BATCH-START $(date -Iseconds) tools=$SHORELINE_TOOLS"
+    failed=()
+    for ds in {{datasets}}; do
+      echo "RUN-START $ds $(date -Iseconds)"
+      if {{bin}} run configs/$ds.toml {{args}}; then echo "RUN-OK $ds $(date -Iseconds)"
+      else echo "RUN-FAIL $ds $(date -Iseconds)"; failed+=("$ds"); fi
+    done
+    summary="shoreline-recon overnight: ${#failed[@]} failed${failed:+ (${failed[*]})}"
+    echo "BATCH-END $(date -Iseconds) $summary"
+    if command -v telegram-notify >/dev/null; then telegram-notify "$summary" || true; fi
+
 # ---------- local (this machine) ----------
 
 # Extract 2 fps frames (long edge 3200) and drop blurry ones, per data/raw/<dataset>.mp4
