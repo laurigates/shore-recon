@@ -37,8 +37,9 @@ GPU host needs `apptainer registry login`, each with a token that has
 `read:packages`.
 
 `just demo` joins each dataset's splat and mesh videos (from its latest export)
-behind a title card into `work/demo/shoreline-recon-v1-demo.mp4`, with chapters
-and a share copy.
+behind a title card into `work/demo/shoreline-recon-v1-demo.mp4`, with a chapter
+per part, a timeline bar under the picture for seeking, and a share copy
+([ADR-0013](docs/adr/0013-demo-video-format.md)).
 
 `just overnight` runs every dataset detached and logs to `tmp/runs/`. It can
 stop a GPU service on the host for the run (`SHORELINE_STOP_SERVICE`; see

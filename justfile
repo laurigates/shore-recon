@@ -82,7 +82,7 @@ frames threshold="100":
       ffmpeg -v error -i data/raw/$ds.mp4 -vf "fps=2,scale=3200:-2:flags=lanczos" -q:v 2 -start_number 1 $out/images/%05d.jpg; \
       uv run -q --no-project --with opencv-python-headless python -I spike/m0/local/frames_manual.py $out {{threshold}}; done
 
-# Join each dataset's splat and mesh videos (latest export) behind a title card into the v1 demo
+# Join each dataset's splat and mesh videos (latest export) into the v1 demo, with chapters and a timeline bar
 [group('local')]
 demo out="work/demo/shoreline-recon-v1-demo.mp4":
     scripts/demo-video.sh {{out}} {{datasets}}
