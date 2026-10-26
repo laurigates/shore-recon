@@ -15,8 +15,9 @@ Design and milestones: [docs/kickoff.md](docs/kickoff.md). Decisions:
 M1 to M4 are implemented. `run` takes a capture through `frames`, `masks`, `sfm`,
 `dense`, `splat`, `post`, `video` and `export`. The v1 deliverables end up in
 `work/<dataset>/export/<fingerprint>/`: `model.glb` (the mesh with its water
-surface), `splat.ply`, `showcase.mp4` (the splat), `mesh.mp4` (the mesh), share
-copies of both videos, `water_plane.json` and `report.json`.
+surface), `splat.ply`, one video per scene and view (`splat-arc.mp4`,
+`splat-drone.mp4`, `mesh-arc.mp4`, `mesh-drone.mp4`, from `video.views`) with share
+copies, `water_plane.json` and `report.json`.
 
 | Stage | Backend | Runs on | Decisions |
 |---|---|---|---|
@@ -36,7 +37,7 @@ private GHCR packages: Docker needs `docker login ghcr.io`, and Apptainer on the
 GPU host needs `apptainer registry login`, each with a token that has
 `read:packages`.
 
-`just demo` joins each dataset's splat and mesh videos (from its latest export)
+`just demo` joins each dataset's splat and mesh videos for every view (from its latest export)
 behind a title card into `work/demo/shoreline-recon-v1-demo.mp4`, with a chapter
 per part, a timeline bar under the picture for seeking, and a share copy
 ([ADR-0013](docs/adr/0013-demo-video-format.md)).

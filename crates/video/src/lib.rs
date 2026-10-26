@@ -1,21 +1,22 @@
 //! `video` stage: the showcase videos of the splat and the mesh (ADR-0008,
 //! #29).
 //!
-//! Runs the render image's `render_video` twice along the same camera path,
-//! derived from the splat's training cameras (the splat stage's undistorted
-//! `dataset/sparse/0`): on the post stage's cleaned `splat.ply`, and on its
-//! `model.glb` with the water surface (moved into the model frame by
-//! `water_plane.json`, ADR-0012). The sidebars come from the sfm and post
-//! manifests. Output: `showcase.mp4` and `mesh.mp4`, each with a `-share`
-//! copy (at most `video.share_max_mib`), `meta.json`, `mesh-meta.json` and
-//! `logs/render_{splat,mesh}.log`.
+//! Runs the render image's `render_video` for every scene and every view in
+//! `video.views`. The camera paths are derived from the splat's training
+//! cameras (the splat stage's undistorted `dataset/sparse/0`). The scenes are
+//! the post stage's cleaned `splat.ply`, and its `model.glb` with the water
+//! surface (moved into the model frame by `water_plane.json`, ADR-0012). The
+//! sidebars come from the sfm and post manifests. Output:
+//! `<scene>-<path>.mp4` (`splat-arc.mp4`, `mesh-drone.mp4`, ...), each with a
+//! `-share` copy (at most `video.share_max_mib`), `meta.json`,
+//! `mesh-meta.json` and `logs/render_<scene>-<path>.log`.
 
 use std::ffi::OsString;
 use std::path::Path;
 
 use serde_json::{Value, json};
 use shoreline_core::cache;
-use shoreline_core::config::{CameraPath, Video};
+use shoreline_core::config::{CameraPath, Video, View};
 use shoreline_core::error::io_error;
 use shoreline_core::stage::{Inputs, Metrics, StageOutput, StageRun};
 use shoreline_core::tools::Invocation;
@@ -30,27 +31,42 @@ const POST: &str = "post";
 const RENDER: &str = "render";
 
 /// Bump when the output changes for the same config, inputs and tool.
-const REVISION: u32 = 2;
+const REVISION: u32 = 3;
 
-/// Metric names.
-pub const VIDEO_MIB: &str = "video_mib";
-pub const SHARE_MIB: &str = "share_mib";
-pub const MESH_MIB: &str = "mesh_mib";
-pub const MESH_SHARE_MIB: &str = "mesh_share_mib";
+/// The rendered scenes, in render order.
+pub const SCENES: &[&str] = &["splat", "mesh"];
 
 pub struct VideoStage;
 
-fn path_name(path: CameraPath) -> &'static str {
+pub fn path_name(path: CameraPath) -> &'static str {
     match path {
         CameraPath::Arc => "arc",
         CameraPath::Drone => "drone",
     }
 }
 
+/// `<scene>-<path>`, the stem of one rendered video.
+pub fn video_name(scene: &str, view: &View) -> String {
+    format!("{scene}-{}", path_name(view.path))
+}
+
+/// Every file name the stage writes for `video`, in scene then view order:
+/// each video followed by its share copy.
+pub fn video_files(video: &Video) -> Vec<String> {
+    SCENES
+        .iter()
+        .flat_map(|scene| video.views.iter().map(move |v| video_name(scene, v)))
+        .flat_map(|name| [format!("{name}.mp4"), format!("{name}-share.mp4")])
+        .collect()
+}
+
 /// `render_video` arguments: `scene` (a splat `.ply`, or a `.glb` with its
-/// `frame`) rendered to `<out>/<name>.mp4` and `<out>/<name>-share.mp4`.
+/// `frame`) along `view`, rendered to `<out>/<name>.mp4` and
+/// `<out>/<name>-share.mp4`.
+#[allow(clippy::too_many_arguments)]
 pub fn render_args(
     video: &Video,
+    view: &View,
     scene: &Path,
     frame: Option<&Path>,
     sparse: &Path,
@@ -68,8 +84,8 @@ pub fn render_args(
         args.extend([OsString::from("--frame"), frame.into()]);
     }
     let opts = [
-        ("--path", path_name(video.path).to_owned()),
-        ("--seconds", video.seconds.to_string()),
+        ("--path", path_name(view.path).to_owned()),
+        ("--seconds", view.seconds.to_string()),
         ("--fps", video.fps.to_string()),
         ("--size", format!("{}x{}", video.width, video.height)),
         ("--share-max-mib", video.share_max_mib.to_string()),
@@ -237,49 +253,43 @@ impl Stage for VideoStage {
 
         let render = ctx.tools.get(RENDER)?;
         let video = &ctx.config.video;
-        let runs = [
-            (
-                "showcase",
-                post_dir.join("splat.ply"),
-                None,
-                splat_meta,
-                "render_splat",
-            ),
-            (
-                "mesh",
-                post_dir.join("model.glb"),
-                Some(post_dir.join("water_plane.json")),
-                mesh_meta,
-                "render_mesh",
-            ),
-        ];
         let mut tools = Vec::new();
-        for (name, scene, frame, meta_path, log) in runs {
-            let args = render_args(
-                video,
-                &scene,
-                frame.as_deref(),
-                &sparse,
-                &meta_path,
-                out_dir,
-                name,
-            );
-            let inv = Invocation::new(args)
-                .mount(splat)
-                .mount(post_dir)
-                .mount(out_dir);
-            tools.push(render.run(&inv, &out_dir.join(format!("logs/{log}.log")))?);
+        let mut metrics = Metrics::new();
+        for &scene in SCENES {
+            let (file, frame, meta_path) = match scene {
+                "splat" => (post_dir.join("splat.ply"), None, &splat_meta),
+                _ => (
+                    post_dir.join("model.glb"),
+                    Some(post_dir.join("water_plane.json")),
+                    &mesh_meta,
+                ),
+            };
+            for view in &video.views {
+                let name = video_name(scene, view);
+                let args = render_args(
+                    video,
+                    view,
+                    &file,
+                    frame.as_deref(),
+                    &sparse,
+                    meta_path,
+                    out_dir,
+                    &name,
+                );
+                let inv = Invocation::new(args)
+                    .mount(splat)
+                    .mount(post_dir)
+                    .mount(out_dir);
+                let log = out_dir.join(format!("logs/render_{name}.log"));
+                tools.push(render.run(&inv, &log)?);
+                let size = |f: String| mib(&out_dir.join(f));
+                metrics.insert(format!("{name}_mib"), size(format!("{name}.mp4"))?);
+                metrics.insert(
+                    format!("{name}_share_mib"),
+                    size(format!("{name}-share.mp4"))?,
+                );
+            }
         }
-
-        let metrics = [
-            (VIDEO_MIB, mib(&out_dir.join("showcase.mp4"))?),
-            (SHARE_MIB, mib(&out_dir.join("showcase-share.mp4"))?),
-            (MESH_MIB, mib(&out_dir.join("mesh.mp4"))?),
-            (MESH_SHARE_MIB, mib(&out_dir.join("mesh-share.mp4"))?),
-        ]
-        .into_iter()
-        .map(|(k, v)| (k.to_owned(), v))
-        .collect();
         Ok(StageRun { tools, metrics })
     }
 }
@@ -309,14 +319,17 @@ mod tests {
     #[test]
     fn render_args_follow_the_video_config() {
         let config = repo_config();
+        let arc = config.video.views[0];
+        let drone = config.video.views[1];
         let args = render_args(
             &config.video,
+            &arc,
             Path::new("/p/splat.ply"),
             None,
             Path::new("/s/dataset/sparse/0"),
             Path::new("/o/meta.json"),
             Path::new("/o"),
-            "showcase",
+            &video_name("splat", &arc),
         );
         assert_eq!(
             strings(&args),
@@ -324,7 +337,7 @@ mod tests {
                 "/p/splat.ply",
                 "/s/dataset/sparse/0",
                 "/o/meta.json",
-                "/o/showcase.mp4",
+                "/o/splat-arc.mp4",
                 "--path",
                 "arc",
                 "--seconds",
@@ -336,17 +349,18 @@ mod tests {
                 "--share-max-mib",
                 "30",
                 "--share",
-                "/o/showcase-share.mp4",
+                "/o/splat-arc-share.mp4",
             ]
         );
         let mesh = strings(&render_args(
             &config.video,
+            &drone,
             Path::new("/p/model.glb"),
             Some(Path::new("/p/water_plane.json")),
             Path::new("/s/dataset/sparse/0"),
             Path::new("/o/mesh-meta.json"),
             Path::new("/o"),
-            "mesh",
+            &video_name("mesh", &drone),
         ));
         assert_eq!(
             mesh[..6],
@@ -354,12 +368,30 @@ mod tests {
                 "/p/model.glb",
                 "/s/dataset/sparse/0",
                 "/o/mesh-meta.json",
-                "/o/mesh.mp4",
+                "/o/mesh-drone.mp4",
                 "--frame",
                 "/p/water_plane.json"
             ]
         );
-        assert_eq!(mesh.last().unwrap(), "/o/mesh-share.mp4");
+        assert_eq!(mesh[6..10], ["--path", "drone", "--seconds", "20"]);
+        assert_eq!(mesh.last().unwrap(), "/o/mesh-drone-share.mp4");
+    }
+
+    #[test]
+    fn video_files_cover_every_scene_and_view() {
+        assert_eq!(
+            video_files(&repo_config().video),
+            [
+                "splat-arc.mp4",
+                "splat-arc-share.mp4",
+                "splat-drone.mp4",
+                "splat-drone-share.mp4",
+                "mesh-arc.mp4",
+                "mesh-arc-share.mp4",
+                "mesh-drone.mp4",
+                "mesh-drone-share.mp4",
+            ]
+        );
     }
 
     #[test]

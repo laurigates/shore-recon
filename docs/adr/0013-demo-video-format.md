@@ -14,8 +14,10 @@ asked for the same on the v1 demo and for it to be part of the process.
 
 ## Decision
 
-1. Every demo built by `just demo` has one MP4 chapter per part (the title card, then each
-   dataset's splat and mesh), titled `<group> · <part>`, and a timeline bar under the picture.
+1. Every demo built by `just demo` has one MP4 chapter per part (the title card, then for each
+   dataset the splat and the mesh along each of `video.views`: arc and drone by default),
+   titled `<group> · <part>` (for example `Laajasalo side · mesh · drone`), and a timeline bar
+   under the picture.
    The bar is 80 px at 1920x1080, which gives a 1920x1160 frame.
 2. The bar is drawn from the chapters by `scripts/timeline_bar.py`, the spike's bar applied
    to a finished video. It has one block per chapter, grouped and labelled by the text before
@@ -34,5 +36,4 @@ asked for the same on the v1 demo and for it to be part of the process.
 - The bar pass re-encodes the video. The joined intermediate is encoded at CRF 20, so the
   second encode (CRF 30) is not stacked on a low-quality input. `just demo` takes about 50 s
   for the 66 s v1 demo.
-- The per-dataset `showcase.mp4` and `mesh.mp4` from the video stage have no bar: each is a
-  single 16 s loop.
+- The video stage's per-view videos (`<scene>-<path>.mp4`) have no bar: each is a single loop.
