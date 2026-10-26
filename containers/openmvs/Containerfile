@@ -1,0 +1,80 @@
+# Dense backend for the dense stage (ADR-0011): OpenMVS v2.4.0 with CUDA, built
+# for the GPU host's architecture (sm_89, RTX 4090). Every source is pinned:
+# upstream's docker/buildInDocker.sh clones branches, so it is not used.
+# Built and pushed by .github/workflows/containers.yml.
+FROM nvidia/cuda:12.8.1-devel-ubuntu24.04@sha256:520292dbb4f755fd360766059e62956e9379485d9e073bbd2f6e3c20c270ed66 AS build
+
+ARG OPENMVS_REF=v2.4.0
+ARG VCG_COMMIT=658ba36d0a5666650da6e066b4794efc5a463407
+ARG EIGEN_REF=3.4.0
+ARG CGAL_REF=v6.0.1
+# The last nanoflann release before OpenMVS v2.4.0 (2026-01-20).
+ARG NANOFLANN_REF=v1.9.0
+# OpenMVS v2.4.0 writes JPEG XL through OpenCV (cv::IMWRITE_JPEGXL_QUALITY, OpenCV >= 4.11);
+# Ubuntu 24.04 ships OpenCV 4.6. Main modules only; Types.inl calls cv::imshow unguarded,
+# so highgui is built (headless, no GUI backend).
+ARG OPENCV_REF=4.12.0
+ARG CUDA_ARCH=89
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential ca-certificates cmake git pkg-config \
+        libboost-iostreams-dev libboost-program-options-dev libboost-serialization-dev \
+        libboost-system-dev libboost-thread-dev libgmp-dev libmpfr-dev \
+        libjpeg-dev libjxl-dev libpng-dev libtiff-dev zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+RUN git clone --depth 1 --branch "${OPENCV_REF}" https://github.com/opencv/opencv.git \
+    && cmake -S opencv -B opencv/build -DCMAKE_BUILD_TYPE=Release -DWITH_JPEGXL=ON -DWITH_CUDA=OFF \
+        -DBUILD_opencv_dnn=OFF -DBUILD_opencv_gapi=OFF -DBUILD_opencv_stitching=OFF \
+        -DWITH_GTK=OFF -DWITH_QT=OFF -DWITH_FFMPEG=OFF -DWITH_GSTREAMER=OFF -DWITH_V4L=OFF \
+        -DBUILD_TESTS=OFF -DBUILD_PERF_TESTS=OFF -DBUILD_EXAMPLES=OFF -DBUILD_opencv_apps=OFF \
+        -DBUILD_opencv_python3=OFF -DBUILD_JAVA=OFF \
+    && cmake --build opencv/build -j"$(nproc)" && cmake --install opencv/build && ldconfig \
+    && rm -rf opencv
+RUN git clone --depth 1 --branch "${EIGEN_REF}" https://gitlab.com/libeigen/eigen.git \
+    && cmake -S eigen -B eigen/build && cmake --install eigen/build \
+    && git clone --depth 1 --branch "${CGAL_REF}" https://github.com/CGAL/cgal.git \
+    && cmake -S cgal -B cgal/build -DCMAKE_BUILD_TYPE=Release && cmake --install cgal/build \
+    && git clone --depth 1 --branch "${NANOFLANN_REF}" https://github.com/jlblancoc/nanoflann.git \
+    && cmake -S nanoflann -B nanoflann/build -DNANOFLANN_BUILD_EXAMPLES=OFF -DNANOFLANN_BUILD_TESTS=OFF \
+    && cmake --install nanoflann/build \
+    && git clone https://github.com/cdcseacave/VCG.git vcglib && git -C vcglib checkout --quiet "${VCG_COMMIT}" \
+    && git clone --depth 1 --branch "${OPENMVS_REF}" https://github.com/cdcseacave/openMVS.git
+
+RUN cmake -S openMVS -B openMVS/build -DCMAKE_BUILD_TYPE=Release -DVCG_ROOT=/src/vcglib \
+        -DOpenMVS_USE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH}" \
+        -DCMAKE_LIBRARY_PATH=/usr/local/cuda/lib64/stubs \
+        -DOpenMVS_BUILD_VIEWER=OFF -DOpenMVS_USE_PYTHON=OFF -DOpenMVS_USE_BREAKPAD=OFF \
+        -DOpenMVS_ENABLE_TESTS=OFF \
+    && cmake --build openMVS/build -j"$(nproc)" \
+    && cmake --install openMVS/build
+
+# The Debian packages that own the binaries' shared libraries, for the runtime stage.
+# Paths are resolved first: with Ubuntu's merged /usr, ldd reports /lib/... while dpkg
+# records /usr/lib/.... libcuda comes from the host driver at run time (apptainer --nv),
+# and OpenCV from /usr/local is copied, not installed.
+RUN ldd /usr/local/bin/OpenMVS/* | awk '/=> \// {print $3}' | xargs -r readlink -f | sort -u \
+        | xargs -r dpkg -S 2>/dev/null | cut -d: -f1 | sort -u > /runtime-packages \
+    && cat /runtime-packages && test -s /runtime-packages
+
+FROM nvidia/cuda:12.8.1-runtime-ubuntu24.04@sha256:ebef3c171eeef0298e4eb2e4be843105edf3b8b0ac45e0b43acee358e8046867
+
+LABEL org.opencontainers.image.source="https://github.com/laurigates/data-processing" \
+      org.opencontainers.image.description="shoreline-recon dense backend: OpenMVS v2.4.0 (CUDA, sm_89)"
+
+COPY --from=build /runtime-packages /tmp/runtime-packages
+RUN apt-get update && xargs -a /tmp/runtime-packages apt-get install -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/* /tmp/runtime-packages
+COPY --from=build /usr/local/bin/OpenMVS /usr/local/bin/OpenMVS
+COPY --from=build /usr/local/lib/libopencv_* /usr/local/lib/
+RUN ldconfig
+ENV PATH=/usr/local/bin/OpenMVS:$PATH
+
+# Fails the build if a tool is missing or a library other than the driver's
+# libcuda does not resolve. The tools cannot start here: CI has no GPU driver.
+RUN for t in InterfaceCOLMAP DensifyPointCloud ReconstructMesh RefineMesh TextureMesh; do \
+        test -x "/usr/local/bin/OpenMVS/$t" || { echo "missing $t"; exit 1; }; done; \
+    missing=$(ldd /usr/local/bin/OpenMVS/* | grep 'not found' | grep -v 'libcuda.so' || true); \
+    test -z "$missing" || { echo "$missing"; exit 1; }
