@@ -17,7 +17,9 @@ M1 to M4 are implemented. `run` takes a capture through `frames`, `masks`, `sfm`
 `work/<dataset>/export/<fingerprint>/`: `model.glb` (the mesh with its water
 surface), `splat.ply`, one video per scene and view (`splat-arc.mp4`,
 `splat-drone.mp4`, `mesh-arc.mp4`, `mesh-drone.mp4`, from `video.views`) with share
-copies, `water_plane.json` and `report.json`.
+copies, a short clip per processing step (`step-1-frames.mp4` to
+`step-6-splat-raw.mp4`: frames, masks, sparse points and cameras, dense points, the
+mesh and the splat before post), `water_plane.json` and `report.json`.
 
 | Stage | Backend | Runs on | Decisions |
 |---|---|---|---|

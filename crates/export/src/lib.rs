@@ -29,11 +29,12 @@ const DEPS: &[&str] = &["frames", "masks", "sfm", "dense", "splat", "post", "vid
 pub const POST_FILES: &[&str] = &["model.glb", "splat.ply", "water_plane.json"];
 
 /// `(stage, file)` deliverables, copied under the same name: post's files,
-/// then every video the config's views produce.
+/// the processing-step clips, then every video the config's views produce.
 pub fn deliverables(config: &Config) -> Vec<(&'static str, String)> {
     let post = POST_FILES.iter().map(|f| ("post", (*f).to_owned()));
-    let video = shoreline_video::video_files(&config.video)
+    let video = shoreline_video::step_files()
         .into_iter()
+        .chain(shoreline_video::video_files(&config.video))
         .map(|f| ("video", f));
     post.chain(video).collect()
 }
@@ -258,6 +259,7 @@ mod tests {
             assert!(out.join(f).is_file(), "{f}");
         }
         assert!(all.iter().any(|(_, f)| f == "mesh-drone.mp4"));
+        assert!(all.iter().any(|(_, f)| f == "step-3-sparse.mp4"));
         let report: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(out.join(REPORT)).unwrap()).unwrap();
         assert_eq!(report["dataset"], "reposalmi-laajasalo");

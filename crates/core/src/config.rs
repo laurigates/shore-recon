@@ -141,6 +141,8 @@ pub struct View {
 #[serde(deny_unknown_fields)]
 pub struct Video {
     pub views: Vec<View>,
+    /// Length of each processing-step clip (frames, masks, sparse, ...).
+    pub step_seconds: f64,
     pub fps: u32,
     pub width: u32,
     pub height: u32,
@@ -250,6 +252,9 @@ impl Config {
         }
         if self.video.share_max_mib <= 0.0 {
             return invalid("video.share_max_mib must be positive");
+        }
+        if !(self.video.step_seconds.is_finite() && self.video.step_seconds > 0.0) {
+            return invalid("video.step_seconds must be a positive finite number");
         }
         if self.video.fps == 0 || self.video.width == 0 || self.video.height == 0 {
             return invalid("video.fps, video.width and video.height must be positive");
@@ -439,6 +444,8 @@ mod tests {
             "[video]\nviews = [{ path = \"arc\", seconds = nan }]\n",
             "[video]\nviews = [{ path = \"arc\", seconds = 1.0 }, { path = \"arc\", seconds = 2.0 }]\n",
             "[video]\npath = \"arc\"\n",
+            "[video]\nstep_seconds = 0.0\n",
+            "[video]\nstep_seconds = nan\n",
             "[video]\nshare_max_mib = -1.0\n",
             "[video]\nfps = 0\n",
             "[video]\nwidth = 0\n",

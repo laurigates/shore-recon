@@ -21,7 +21,8 @@ from PIL import Image, ImageDraw, ImageFont
 
 BG = (10, 12, 16)
 ACCENT = {"splat": (20, 184, 166), "mesh": (245, 158, 11)}
-NEUTRAL = (120, 128, 140)
+STEP = (99, 102, 241)  # processing steps
+NEUTRAL = (120, 128, 140)  # the title card
 
 
 def die(msg):
@@ -45,10 +46,14 @@ def probe(path):
 
 
 def accent(label):
+    if label.lower() == "title":
+        return NEUTRAL
+    if label.lower().startswith("step"):
+        return STEP
     for key, colour in ACCENT.items():
         if key in label.lower():
             return colour
-    return NEUTRAL
+    return STEP
 
 
 def main(argv=None):

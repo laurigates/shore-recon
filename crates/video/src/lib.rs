@@ -10,6 +10,14 @@
 //! `<scene>-<path>.mp4` (`splat-arc.mp4`, `mesh-drone.mp4`, ...), each with a
 //! `-share` copy (at most `video.share_max_mib`), `meta.json`,
 //! `mesh-meta.json` and `logs/render_<scene>-<path>.log`.
+//!
+//! It also renders one clip per processing step, each `video.step_seconds`
+//! long along the first view's path, to show how the result was built:
+//! `step-1-frames.mp4` (the kept frames), `step-2-masks.mp4` (the mask
+//! overlays), `step-3-sparse.mp4` (the SfM points and cameras),
+//! `step-4-dense.mp4` (the dense points), `step-5-mesh-raw.mp4` (the textured
+//! mesh before post) and `step-6-splat-raw.mp4` (the splat before the floater
+//! cull). Their sidebars are in `step-<n>-<name>-meta.json`.
 
 use std::ffi::OsString;
 use std::path::Path;
@@ -25,16 +33,34 @@ use shoreline_post as post;
 use shoreline_sfm::metrics as sfm;
 
 pub const NAME: &str = "video";
+const FRAMES: &str = "frames";
+const MASKS: &str = "masks";
 const SFM: &str = "sfm";
+const DENSE: &str = "dense";
 const SPLAT: &str = "splat";
 const POST: &str = "post";
 const RENDER: &str = "render";
 
 /// Bump when the output changes for the same config, inputs and tool.
-const REVISION: u32 = 3;
+const REVISION: u32 = 4;
 
 /// The rendered scenes, in render order.
 pub const SCENES: &[&str] = &["splat", "mesh"];
+
+/// The processing-step clips: `(file stem without "step-", sidebar label)`.
+pub const STEPS: &[(&str, &str)] = &[
+    ("1-frames", "frames"),
+    ("2-masks", "masks"),
+    ("3-sparse", "sparse reconstruction"),
+    ("4-dense", "dense points"),
+    ("5-mesh-raw", "textured mesh, before post"),
+    ("6-splat-raw", "Gaussian splat, before post"),
+];
+
+/// The step clips' file names, in order.
+pub fn step_files() -> Vec<String> {
+    STEPS.iter().map(|(s, _)| format!("step-{s}.mp4")).collect()
+}
 
 pub struct VideoStage;
 
@@ -60,9 +86,9 @@ pub fn video_files(video: &Video) -> Vec<String> {
         .collect()
 }
 
-/// `render_video` arguments: `scene` (a splat `.ply`, or a `.glb` with its
-/// `frame`) along `view`, rendered to `<out>/<name>.mp4` and
-/// `<out>/<name>-share.mp4`.
+/// `render_video` arguments: `scene` (a splat or point `.ply`, a `.glb` with
+/// its `frame`, a `points3D.bin` or an image directory) along `view`,
+/// rendered to `<out>/<name>.mp4` and, with `share`, `<out>/<name>-share.mp4`.
 #[allow(clippy::too_many_arguments)]
 pub fn render_args(
     video: &Video,
@@ -73,6 +99,7 @@ pub fn render_args(
     meta: &Path,
     out: &Path,
     name: &str,
+    share: bool,
 ) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec![
         scene.into(),
@@ -93,11 +120,82 @@ pub fn render_args(
     for (flag, value) in opts {
         args.extend([OsString::from(flag), value.into()]);
     }
-    args.extend([
-        OsString::from("--share"),
-        out.join(format!("{name}-share.mp4")).into(),
-    ]);
+    if share {
+        args.extend([
+            OsString::from("--share"),
+            out.join(format!("{name}-share.mp4")).into(),
+        ]);
+    }
     args
+}
+
+/// The sidebar of a processing-step clip, from the upstream stages' metrics.
+pub fn step_meta(config: &Config, step: &str, label: &str, m: &StepMetrics) -> Value {
+    let get = |metrics: &Metrics, k: &str| metrics.get(k).copied().unwrap_or(f64::NAN);
+    let percent = |v: f64| format!("{:.0} %", v * 100.0);
+    let (name, rows) = match step {
+        "1-frames" => (
+            "Frames",
+            json!([
+                ["Extracted", thousands(get(&m.frames, "extracted"))],
+                ["Kept (sharp)", thousands(get(&m.frames, "kept"))],
+                ["Rate", format!("{} fps", config.frames.fps)],
+            ]),
+        ),
+        "2-masks" => (
+            "Masks",
+            json!([
+                ["Frames", thousands(get(&m.masks, "frames"))],
+                ["Masked, mean", percent(get(&m.masks, "masked_mean"))],
+                ["Masked, max", percent(get(&m.masks, "masked_max"))],
+                ["Classes", config.masks.classes.len().to_string()],
+            ]),
+        ),
+        "3-sparse" => return sfm_meta(config, label, &m.sfm),
+        "4-dense" => (
+            "Dense",
+            json!([["Points", thousands(get(&m.dense, "dense_points"))]]),
+        ),
+        "5-mesh-raw" => (
+            "Mesh",
+            json!([
+                ["Faces", thousands(get(&m.dense, "mesh_faces"))],
+                ["Vertices", thousands(get(&m.dense, "mesh_vertices"))],
+            ]),
+        ),
+        _ => (
+            "Splat",
+            json!([
+                ["Gaussians", thousands(get(&m.splat, "gaussians"))],
+                ["Steps", thousands(f64::from(config.splat.steps))],
+            ]),
+        ),
+    };
+    json!({
+        "title": config.dataset.name,
+        "subtitle": format!("shoreline-recon · {label}"),
+        "kind": "masked",
+        "sections": [[name, rows]],
+    })
+}
+
+fn sfm_meta(config: &Config, label: &str, sfm_metrics: &Metrics) -> Value {
+    json!({
+        "title": config.dataset.name,
+        "subtitle": format!("shoreline-recon · {label}"),
+        "kind": "masked",
+        "sections": [sfm_section(config, sfm_metrics)],
+    })
+}
+
+/// The upstream metrics the step sidebars draw on.
+#[derive(Debug, Default)]
+pub struct StepMetrics {
+    pub frames: Metrics,
+    pub masks: Metrics,
+    pub sfm: Metrics,
+    pub dense: Metrics,
+    pub splat: Metrics,
 }
 
 /// `1234567` → `1,234,567`.
@@ -216,7 +314,7 @@ impl Stage for VideoStage {
     }
 
     fn deps(&self) -> &[&'static str] {
-        &[SFM, SPLAT, POST]
+        &[FRAMES, MASKS, SFM, DENSE, SPLAT, POST]
     }
 
     fn config(&self, config: &Config) -> serde_json::Value {
@@ -275,6 +373,7 @@ impl Stage for VideoStage {
                     meta_path,
                     out_dir,
                     &name,
+                    true,
                 );
                 let inv = Invocation::new(args)
                     .mount(splat)
@@ -289,6 +388,52 @@ impl Stage for VideoStage {
                     size(format!("{name}-share.mp4"))?,
                 );
             }
+        }
+        // Processing-step clips, along the first view's path.
+        let step_metrics = StepMetrics {
+            frames: manifest_metrics(FRAMES, &inputs[FRAMES])?,
+            masks: manifest_metrics(MASKS, &inputs[MASKS])?,
+            sfm: sfm_metrics.clone(),
+            dense: manifest_metrics(DENSE, &inputs[DENSE])?,
+            splat: manifest_metrics(SPLAT, &inputs[SPLAT])?,
+        };
+        let step_view = View {
+            path: video.views[0].path,
+            seconds: video.step_seconds,
+        };
+        let (frames, masks, dense) = (&inputs[FRAMES].dir, &inputs[MASKS].dir, &inputs[DENSE].dir);
+        for &(step, label) in STEPS {
+            let scene = match step {
+                "1-frames" => frames.join("images"),
+                "2-masks" => masks.join("overlays"),
+                "3-sparse" => inputs[SFM].dir.join("sparse/0/points3D.bin"),
+                "4-dense" => dense.join("scene_dense.ply"),
+                "5-mesh-raw" => dense.join("mesh_textured.glb"),
+                _ => splat.join("splat.ply"),
+            };
+            let name = format!("step-{step}");
+            let meta_path = write_meta(
+                &format!("{name}-meta.json"),
+                &step_meta(&ctx.config, step, label, &step_metrics),
+            )?;
+            let args = render_args(
+                video, &step_view, &scene, None, &sparse, &meta_path, out_dir, &name, false,
+            );
+            let mut inv = Invocation::new(args).mount(splat).mount(out_dir);
+            // Mount only what the step reads: the stage outputs can be large.
+            inv = match step {
+                "1-frames" => inv.mount(frames.join("images")),
+                "2-masks" => inv.mount(masks.join("overlays")),
+                "3-sparse" => inv.mount(inputs[SFM].dir.join("sparse/0")),
+                "4-dense" | "5-mesh-raw" => inv.mount(dense),
+                _ => inv,
+            };
+            let log = out_dir.join(format!("logs/render_{name}.log"));
+            tools.push(render.run(&inv, &log)?);
+            metrics.insert(
+                format!("{name}_mib"),
+                mib(&out_dir.join(format!("{name}.mp4")))?,
+            );
         }
         Ok(StageRun { tools, metrics })
     }
@@ -330,6 +475,7 @@ mod tests {
             Path::new("/o/meta.json"),
             Path::new("/o"),
             &video_name("splat", &arc),
+            true,
         );
         assert_eq!(
             strings(&args),
@@ -361,6 +507,7 @@ mod tests {
             Path::new("/o/mesh-meta.json"),
             Path::new("/o"),
             &video_name("mesh", &drone),
+            true,
         ));
         assert_eq!(
             mesh[..6],
@@ -375,6 +522,47 @@ mod tests {
         );
         assert_eq!(mesh[6..10], ["--path", "drone", "--seconds", "20"]);
         assert_eq!(mesh.last().unwrap(), "/o/mesh-drone-share.mp4");
+    }
+
+    #[test]
+    fn step_clips_have_no_share_copy_and_their_own_sidebars() {
+        let config = repo_config();
+        let view = View {
+            path: CameraPath::Arc,
+            seconds: config.video.step_seconds,
+        };
+        let args = strings(&render_args(
+            &config.video,
+            &view,
+            Path::new("/f/images"),
+            None,
+            Path::new("/s/dataset/sparse/0"),
+            Path::new("/o/step-1-frames-meta.json"),
+            Path::new("/o"),
+            "step-1-frames",
+            false,
+        ));
+        assert_eq!(args[3], "/o/step-1-frames.mp4");
+        assert_eq!(args[4..8], ["--path", "arc", "--seconds", "8"]);
+        assert!(!args.iter().any(|a| a == "--share"));
+        assert_eq!(step_files().len(), STEPS.len());
+        assert_eq!(step_files()[2], "step-3-sparse.mp4");
+
+        let m = StepMetrics {
+            frames: [("extracted".to_owned(), 129.0), ("kept".to_owned(), 121.0)].into(),
+            masks: [("masked_mean".to_owned(), 0.503)].into(),
+            dense: [("dense_points".to_owned(), 2293549.0)].into(),
+            ..StepMetrics::default()
+        };
+        let frames = step_meta(&config, "1-frames", "frames", &m);
+        assert_eq!(frames["subtitle"], "shoreline-recon · frames");
+        assert_eq!(frames["sections"][0][1][1], json!(["Kept (sharp)", "121"]));
+        let masks = step_meta(&config, "2-masks", "masks", &m);
+        assert_eq!(masks["sections"][0][1][1], json!(["Masked, mean", "50 %"]));
+        let dense = step_meta(&config, "4-dense", "dense points", &m);
+        assert_eq!(dense["sections"][0][1][0], json!(["Points", "2,293,549"]));
+        let sparse = step_meta(&config, "3-sparse", "sparse reconstruction", &m);
+        assert_eq!(sparse["sections"][0][0], "SfM");
     }
 
     #[test]

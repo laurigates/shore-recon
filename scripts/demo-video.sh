@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Assemble the v1 demo video from the pipeline's deliverables: a title card, then for each
-# dataset the splat and the mesh with its water along every view (`<scene>-<path>.mp4`, the
+# dataset a clip per processing step (`step-<n>-<name>.mp4`: frames, masks, sparse, dense, raw
+# mesh, raw splat), then the splat and the mesh with its water along every view (`<scene>-<path>.mp4`, the
 # views listed in its report.json) from its latest `work/<dataset>/export/<fingerprint>/`,
 # joined with crossfades, with one MP4 chapter per part
 # and a timeline bar under the picture for seeking (scripts/timeline_bar.py, ADR-0013).
@@ -27,6 +28,15 @@ for ds in "$@"; do
     [[ -n $dir ]] || { echo "no export output for $ds; run the pipeline first" >&2; exit 1; }
     side=${ds##*-}
     side_names+=("${side^} side")
+    # The processing steps first, as short clips, then the results along every view.
+    for step in 1-frames:frames 2-masks:masks 3-sparse:sparse 4-dense:dense 5-mesh-raw:raw\ mesh 6-splat-raw:raw\ splat; do
+        clip=${dir}step-${step%%:*}.mp4
+        [[ -f $clip ]] || { echo "$clip not found" >&2; exit 1; }
+        inputs+=("$clip")
+        labels+=("${side^} side · ${step#*:}")
+        durations+=("$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$clip")")
+        echo "$ds: $clip" >&2
+    done
     mapfile -t paths < <(jq -r '.config.video.views[].path' "${dir}report.json")
     ((${#paths[@]} > 0)) || { echo "${dir}report.json lists no video views" >&2; exit 1; }
     for scene in splat mesh; do
