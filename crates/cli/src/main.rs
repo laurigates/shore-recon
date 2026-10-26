@@ -6,6 +6,7 @@ use shoreline_core::pipeline::{self, Event, StageResult};
 use shoreline_core::{Config, RunContext, Stage, Tools, dag};
 use shoreline_frames::Frames;
 use shoreline_masks::Masks;
+use shoreline_sfm::Sfm;
 
 /// Water-aware photogrammetry and Gaussian splatting pipeline.
 #[derive(Debug, Parser)]
@@ -40,7 +41,7 @@ enum Command {
 }
 
 /// Stages implemented so far; `run` refuses targets outside this list.
-const STAGES: &[&dyn Stage] = &[&Frames, &Masks];
+const STAGES: &[&dyn Stage] = &[&Frames, &Masks, &Sfm];
 
 fn load(path: &Path) -> Result<Config> {
     Config::load(path).with_context(|| format!("loading {}", path.display()))
