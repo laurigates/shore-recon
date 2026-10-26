@@ -1,60 +1,69 @@
 ---
 name: splat-videos
-description: Render looping preview videos of the Brush Gaussian splats (arc or drone-path camera, stats sidebar, AV1) and the combined timeline video. Use when asked for splat videos, orbit/flythrough renders, or a shareable preview.
+description: The pipeline's showcase and processing-step videos — which clips the video stage renders (splat/mesh x arc/drone, six step clips), how to change views or framing, how render_video's camera paths work, and checking renders. Use when asked for splat or mesh videos, orbit/flythrough renders, step-by-step clips, or a different camera path.
 allowed-tools: Bash, Read
 created: 2026-10-24
-modified: 2026-10-24
-reviewed: 2026-10-24
+modified: 2026-10-26
+reviewed: 2026-10-26
 ---
 
-# Splat preview videos
+# Showcase and step videos
 
-Renders run on the GPU host with gsplat; recipes and scripts are in `justfile` (group `gpu`) and
-`spike/m0/remote/`. Host settings: `.claude/rules/remote-gpu-host.md`.
+The `video` stage (`crates/video`) runs the render image's `render_video`
+(`containers/render/render_video.py`) on the GPU host. For the whole run, from a new clip to
+the deliverables, use the `process-capture` skill.
 
-## Commands
+## What it renders, per dataset
 
-| Want | Run |
-|---|---|
-| One video per splat, arc camera (16 s loop) | `just gpu-videos arc` |
-| One video per splat, drone-path camera (20 s loop) | `just gpu-videos drone` |
-| Custom length / framing | `just gpu-videos arc 24 --fov-scale 0.7` (extra args go to `render_orbit.py`) |
-| All eight in one video, timeline strip + chapters | `just gpu-timeline` |
-| Copy small enough to attach (< 30 MiB) | `just share-copy work/renders/<file>.mp4` |
+| File | Source | Camera |
+|---|---|---|
+| `splat-<path>.mp4` (+ `-share`) | post's culled `splat.ply` | each of `[video] views` |
+| `mesh-<path>.mp4` (+ `-share`) | post's `model.glb` + `water_plane.json` | each of `[video] views` |
+| `step-1-frames.mp4` | frames `images/` | flipbook |
+| `step-2-masks.mp4` | masks `overlays/` | slideshow |
+| `step-3-sparse.mp4` | sfm `points3D.bin` (+ camera frusta) | first view's path |
+| `step-4-dense.mp4` | dense `scene_dense.ply` | first view's path |
+| `step-5-mesh-raw.mp4` | dense `mesh_textured.glb` | first view's path |
+| `step-6-splat-raw.mp4` | splat `splat.ply` (before the cull) | first view's path |
 
-Both GPU recipes rebuild the sidebar data first (`just meta`), so the panel always reflects the
-artefacts in `work/`. They need the splats and cameras from `just gpu-overnight`.
+Config (`configs/defaults.toml` `[video]`): `views = [{ path = "arc", seconds = 16.0 }, { path =
+"drone", seconds = 20.0 }]`, `step_seconds = 8.0`, size, fps, `share_max_mib`. Export copies all
+of them; `just demo` joins them.
 
-## How the camera paths are built
+## render_video scene modes
 
-- **Arc**: centre = least-squares point nearest to all training cameras' optical axes; up = the
-  direction orthogonal to every camera's x axis (a level gimbal keeps x horizontal; averaging
-  camera up vectors tilts the horizon by the gimbal pitch). Sweeps `SWEEP` (0.85) of the
-  10th–90th-percentile filmed azimuth on a sine, so the loop has no seam.
-- **Drone**: the recorded camera poses in frame order, Gaussian-smoothed (σ 2.5 frames), played
-  forward then back with cosine easing, and pulled back along the view direction by
-  `--pullback` (0.35) × the median camera-to-centre distance.
-- Both widen the field of view with `--fov-scale` (0.8 = 20 % wider than the training camera).
+The first argument picks the mode: a `.ply` with `f_dc_0` is a splat (gsplat, CUDA); any other
+`.ply` or a `points3D.bin` is a point cloud (OpenGL points, frusta for `points3D.bin`); a `.glb`
+is a mesh (OpenGL over headless EGL; `--frame water_plane.json` for post's model, none for the
+raw mesh); a directory is an image slideshow. The second argument is always the splat stage's
+`dataset/sparse/0` (cameras and intrinsics).
 
-## Knobs and what they fix
+## Camera paths
 
-| Symptom | Change |
-|---|---|
-| Subject too close / cropped | lower `--fov-scale` (zoom out) or raise `--pullback` (drone) |
-| Ends of the arc show unfilmed blur and floaters | lower `SWEEP` in `render_orbit.py` |
-| Too fast | longer seconds argument |
-| Panel covers the scene | it does not by design: the panel is a 600 px sidebar (`--sidebar`) |
+- **arc**: centre = the point nearest all training cameras' optical axes; up = orthogonal to
+  every camera's x axis (level gimbal). Sweeps 85 % of the filmed azimuth (10th–90th
+  percentile) on a sine, so the loop has no seam.
+- **drone**: the recorded poses in frame order, smoothed (σ 2.5 frames), played forward then
+  back, pulled back by `--pullback` (0.35) × the median camera-to-centre distance.
+- `--fov-scale` (0.8) widens the view relative to the training camera.
 
-## Checking a change before rendering everything
+## Checking renders without the pipeline
 
-`render_orbit.py … --still N` writes frame N as PNG; `--check` renders training view 0, which
-must match the source frame (camera convention check). Look at the frames at the arc extremes
-(`N` = frames/4 and 3·frames/4) for horizon tilt and floaters.
+Copy `render_video.py` and inputs to a scratch dir on the GPU host and run it in the pinned
+render image with a short clip (`--seconds 3 --fps 4`), then pull frames into a contact sheet:
+
+```sh
+apptainer exec --nv --bind <root> docker://<render image@digest> python <scratch>/render_video.py \
+  <scene> <splat>/dataset/sparse/0 <meta.json> <scratch>/test.mp4 --seconds 3 --fps 4
+```
+
+Use `python <script>` so an edited copy runs instead of the image's `render_video`. Headless GL
+needs `libOpenGL.so.0` + `libEGL.so.1` (the GPU rule has why).
 
 ## Gotchas
 
-- Masked splats render the water dark with streaks: Brush never trained there. That is expected
-  until the post stage adds the water plane.
-- Raw-frame mode (`out = -`) redirects every other stdout write to stderr; anything printing to
-  stdout in the renderer would otherwise corrupt the frame stream.
-- The attachment limit is 30 MiB; the 1920×1160 timeline is ~75 MiB, the `share-copy` ~30 MiB.
+- The splat's drone view shows bright artefacts at the frame edges where few training views
+  reached; the culled splat removes floaters over water, not unconstrained background.
+- A new render image means a ~15 min SIF pull on the first run that uses it.
+- The M0 spike's `just gpu-videos` / `gpu-timeline` recipes render the spike's splats, not the
+  pipeline's; prefer the video stage.

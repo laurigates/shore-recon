@@ -8,7 +8,8 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 host := env("SHORELINE_GPU_HOST", "")
 root := env("SHORELINE_GPU_ROOT", "")
 tag := env("SHORELINE_TAG", "manual-2026-10-23")
-datasets := "reposalmi-laajasalo reposalmi-vartiosaari"
+# Datasets the batch, demo and bundle recipes cover: names of configs/<name>.toml.
+datasets := if env("SHORELINE_DATASETS", "") == "" { "reposalmi-laajasalo reposalmi-vartiosaari" } else { env("SHORELINE_DATASETS") }
 
 # List recipes
 default:
@@ -86,6 +87,20 @@ frames threshold="100":
 [group('local')]
 demo out="work/demo/shoreline-recon-v1-demo.mp4":
     scripts/demo-video.sh {{out}} {{datasets}}
+
+# Zip each dataset's mesh (+ water), splat (as SPZ), water plane, report and README into work/bundle/
+[group('local')]
+bundle:
+    scripts/bundle.sh {{datasets}}
+
+# Send a file to the Telegram chat (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID; bots take files up to 50 MB)
+[group('local')]
+telegram-send file caption="":
+    @test -n "${TELEGRAM_BOT_TOKEN:-}" -a -n "${TELEGRAM_CHAT_ID:-}" || { echo "TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set" >&2; exit 1; }
+    @size=$(stat -f %z "{{file}}"); test "$size" -le 50000000 || { echo "{{file}} is $((size / 1000000)) MB; Telegram bots take at most 50 MB" >&2; exit 1; }
+    @kind=document; case "{{file}}" in *.mp4) kind=video;; esac; \
+      curl -sS --max-time 900 -F chat_id="$TELEGRAM_CHAT_ID" -F "$kind=@{{file}}" -F caption="{{caption}}" \
+        "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/send${kind^}" | jq -c '{ok, error_code, description}'
 
 # Build the overlay metadata JSON for each splat video from the run's artefacts
 [group('local')]
