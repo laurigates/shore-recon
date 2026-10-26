@@ -1,17 +1,17 @@
 name: containers
 
-# Builds the tool images under containers/ (ADR-0006). Pull requests build
-# only; main pushes to GHCR, and the job summary prints the digest that
-# configs/tools.toml pins.
+# Builds the tool images under containers/ (ADR-0006, ADR-0011). Pull requests
+# build only; main pushes to GHCR, and the job summary prints the digest that a
+# tools file pins.
 on:
   push:
     branches: [main]
     paths:
-      - containers/segmentation/**
+      - containers/**
       - .github/workflows/containers.yml
   pull_request:
     paths:
-      - containers/segmentation/**
+      - containers/**
       - .github/workflows/containers.yml
   workflow_dispatch:
 
@@ -23,19 +23,47 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  segmentation:
+  image:
+    name: ${{ matrix.name }}
     runs-on: ubuntu-latest
+    timeout-minutes: 240
     permissions:
       contents: read
       packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # linux/arm64 for local Docker on Apple Silicon; built under QEMU.
+          - name: segmentation
+            platform: linux/arm64
+            cache: max
+          # linux/amd64 for the GPU host (Apptainer --nv).
+          - name: brush
+            platform: linux/amd64
+            cache: max
+          # The CUDA devel build stage is too large for the Actions cache, so
+          # only the final stage's layers are cached.
+          - name: openmvs
+            platform: linux/amd64
+            cache: min
+          # Same: torch and its CUDA libraries make the build stage several GB.
+          - name: render
+            platform: linux/amd64
+            cache: min
     env:
-      IMAGE: ghcr.io/laurigates/shoreline-segmentation
+      IMAGE: ghcr.io/laurigates/shoreline-${{ matrix.name }}
       # Only main publishes; a dispatch on another branch builds without pushing.
       PUSH: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      # linux/arm64 only for now (local Docker on Apple Silicon); built under QEMU.
+      - name: Free disk space
+        if: matrix.name == 'openmvs' || matrix.name == 'render'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        if: matrix.platform == 'linux/arm64'
         with:
           platforms: arm64
           image: tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
@@ -51,14 +79,14 @@ jobs:
       - id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
-          context: containers/segmentation
-          file: containers/segmentation/Containerfile
-          platforms: linux/arm64
+          context: containers/${{ matrix.name }}
+          file: containers/${{ matrix.name }}/Containerfile
+          platforms: ${{ matrix.platform }}
           push: ${{ env.PUSH == 'true' }}
           tags: ${{ env.IMAGE }}:sha-${{ github.sha }}
           provenance: false
-          cache-from: type=gha,scope=segmentation
-          cache-to: type=gha,scope=segmentation,mode=max
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,scope=${{ matrix.name }},mode=${{ matrix.cache }}
       - name: Digest
         if: env.PUSH == 'true'
         run: echo "${IMAGE}@${{ steps.build.outputs.digest }}" | tee -a "$GITHUB_STEP_SUMMARY"
