@@ -161,15 +161,15 @@ impl Mesh {
         (mesh, removed)
     }
 
-    /// Simplify to at most `target_faces` faces with meshoptimizer, which
-    /// collapses edges onto existing vertices, so every kept vertex keeps its
-    /// UV. The first pass keeps texture seams intact; when seams block it
-    /// short of the target, a second pass may collapse across them, steered
-    /// by the UV error. Returns the mesh, the relative error reached, and
-    /// whether the second pass ran.
-    pub fn decimate(&self, target_faces: usize) -> (Self, f32, bool) {
+    /// Simplify towards `target_faces` faces with meshoptimizer, which
+    /// collapses edges onto existing vertices and keeps texture seams, so
+    /// every face keeps UVs from one atlas chart. Returns the mesh and the
+    /// relative error reached. Seams can stop it above the target: collapsing
+    /// across them leaves faces whose corners sample different charts, which
+    /// renders as speckles (ADR-0012).
+    pub fn decimate(&self, target_faces: usize) -> (Self, f32) {
         if self.faces() <= target_faces {
-            return (self.clone(), 0.0, false);
+            return (self.clone(), 0.0);
         }
         let bytes: Vec<u8> = self
             .positions
@@ -188,24 +188,7 @@ impl Mesh {
             meshopt::SimplifyOptions::None,
             Some(&mut error),
         );
-        if indices.len() <= target_faces * 3 {
-            return (self.with_indices(indices), error, false);
-        }
-        let uvs: Vec<f32> = self.uvs.iter().flatten().copied().collect();
-        let unlocked = vec![false; self.positions.len()];
-        let indices = meshopt::simplify_with_attributes_and_locks(
-            &self.indices,
-            &adapter,
-            &uvs,
-            &[1.0, 1.0],
-            8,
-            &unlocked,
-            target_faces * 3,
-            1.0,
-            meshopt::SimplifyOptions::Permissive,
-            Some(&mut error),
-        );
-        (self.with_indices(indices), error, true)
+        (self.with_indices(indices), error)
     }
 }
 
@@ -312,8 +295,7 @@ mod tests {
     #[test]
     fn decimate_reaches_the_target_on_a_flat_grid_and_keeps_uvs_valid() {
         let m = grid(40, 0.0, 0.0); // 3200 faces
-        let (d, error, permissive) = m.decimate(400);
-        assert!(!permissive);
+        let (d, error) = m.decimate(400);
         assert!(d.faces() <= 400, "{} faces", d.faces());
         assert!(d.faces() > 0);
         assert!(error < 1e-3, "flat grid simplifies without error: {error}");
@@ -326,9 +308,9 @@ mod tests {
     }
 
     #[test]
-    fn decimate_collapses_across_seams_when_they_block_the_target() {
-        // Every face its own UV chart: all vertices are seam duplicates, so a
-        // seam-preserving pass cannot remove anything.
+    fn decimate_never_collapses_across_seams() {
+        // Every face its own UV chart: all vertices are seam duplicates, so
+        // nothing can be removed without mixing charts within a face.
         let g = grid(20, 0.0, 0.0); // 800 faces
         let mut positions = Vec::new();
         let mut uvs = Vec::new();
@@ -344,9 +326,19 @@ mod tests {
             }
         }
         let seamed = Mesh::new(positions, uvs, indices).unwrap();
-        let (d, _, permissive) = seamed.decimate(200);
-        assert!(permissive);
-        assert!(d.faces() <= 200, "{} faces", d.faces());
-        assert!(d.faces() > 0);
+        let (d, _) = seamed.decimate(200);
+        assert!(d.faces() > 700, "{} faces", d.faces());
+        // Every remaining face is an input face: positions and UVs together.
+        let corner = |m: &Mesh, i: u32| {
+            let (p, uv) = (m.positions[i as usize], m.uvs[i as usize]);
+            [p[0], p[1], p[2], uv[0], uv[1]].map(f32::to_bits)
+        };
+        let faces = |m: &Mesh| -> std::collections::HashSet<[[u32; 5]; 3]> {
+            m.indices
+                .chunks_exact(3)
+                .map(|t| [corner(m, t[0]), corner(m, t[1]), corner(m, t[2])])
+                .collect()
+        };
+        assert!(faces(&d).is_subset(&faces(&seamed)));
     }
 }
