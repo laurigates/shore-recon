@@ -12,9 +12,11 @@ Design and milestones: [docs/kickoff.md](docs/kickoff.md). Decisions:
 
 ## Status
 
-M1 to M3 are implemented, plus the showcase video and the M4 `post` stage. `run`
-takes a capture through `frames`, `masks`, `sfm`, `dense`, `splat`, `video` and
-`post`. Export is next (#39).
+M1 to M4 are implemented. `run` takes a capture through `frames`, `masks`, `sfm`,
+`dense`, `splat`, `post`, `video` and `export`. The v1 deliverables end up in
+`work/<dataset>/export/<fingerprint>/`: `model.glb` (the mesh with its water
+surface), `splat.ply`, `showcase.mp4` (the splat), `mesh.mp4` (the mesh), share
+copies of both videos, `water_plane.json` and `report.json`.
 
 | Stage | Backend | Runs on | Decisions |
 |---|---|---|---|
@@ -23,8 +25,9 @@ takes a capture through `frames`, `masks`, `sfm`, `dense`, `splat`, `video` and
 | `sfm` | COLMAP 4.2.1; metrics read from the model | GPU host | [ADR-0008](docs/adr/0008-v1-deliverables-and-gpu-stages.md), [ADR-0010](docs/adr/0010-sfm-metrics-from-the-model.md) |
 | `dense` | OpenMVS v2.4.0, native masks, textured GLB | GPU host | [ADR-0011](docs/adr/0011-splat-and-dense-images.md) |
 | `splat` | Brush 0.3.0 | GPU host | [ADR-0011](docs/adr/0011-splat-and-dense-images.md) |
-| `video` | gsplat renderer, AV1 plus a share copy | GPU host | [ADR-0008](docs/adr/0008-v1-deliverables-and-gpu-stages.md) |
+| `video` | gsplat (splat) and OpenGL (mesh) renderer, AV1 plus share copies | GPU host | [ADR-0008](docs/adr/0008-v1-deliverables-and-gpu-stages.md) |
 | `post` | water plane, mesh cleanup and decimation, splat floater cull | this machine | [ADR-0012](docs/adr/0012-post-stage.md) |
+| `export` | deliverables and `report.json` | this machine | [ADR-0008](docs/adr/0008-v1-deliverables-and-gpu-stages.md) |
 
 The tool runner supports native, podman, docker and Apptainer runtimes. A
 container tool can run on a remote host over ssh, with its mounts mirrored by

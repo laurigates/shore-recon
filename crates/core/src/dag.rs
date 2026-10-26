@@ -13,7 +13,10 @@ pub const PIPELINE: &[(&str, &[&str])] = &[
     ("splat", &["frames", "masks", "sfm"]),
     ("post", &["masks", "sfm", "dense", "splat"]),
     ("video", &["sfm", "splat", "post"]),
-    ("export", &["post"]),
+    (
+        "export",
+        &["frames", "masks", "sfm", "dense", "splat", "post", "video"],
+    ),
 ];
 
 /// Topologically sort stages. Ties are broken by declaration order, so the
