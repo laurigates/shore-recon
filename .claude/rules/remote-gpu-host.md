@@ -3,6 +3,8 @@ paths:
   - "justfile"
   - "spike/**"
   - ".env.example"
+  - "containers/**"
+  - "configs/**"
 ---
 
 # Running Stages on the Remote GPU Host
@@ -19,8 +21,20 @@ write its name or paths into committed files.
 - If neither is set and a task needs the GPU, **ask the user for the host and root**. Do not
   guess from other repos' notes or shell history.
 - Optional `SHORELINE_STOP_SERVICE`: a systemd unit (for example another GPU service) that
-  `just gpu-overnight` stops for the run and starts again on any exit. Stopping a shared
-  service interrupts its users — confirm with the user, and check the service is idle first.
+  `just overnight` and `just gpu-overnight` stop for the run and start again on any exit. It
+  needs `SHORELINE_GPU_HOST` in the environment too: without it the batch exits before the
+  first dataset. Stopping a shared service interrupts its users — confirm with the user, and
+  check the service is idle first.
+
+## Images and pins
+
+- The containers workflow builds images on pull requests and **publishes only from `main`**.
+  A change to an image therefore merges before the pipeline can use it.
+- GPU images are pinned by digest in the **host tools file** (`configs/<host>.local.toml`,
+  git-ignored), not in `configs/tools.toml`. After the `main` run finishes, take the digest
+  from its log (`gh run view <id> --log | grep -oE 'shoreline-<name>@sha256:[0-9a-f]{64}'`)
+  and edit the host file; there is nothing to commit.
+- A new pin changes the stage's version, so the stage and everything downstream re-run.
 
 ## How to drive it
 
@@ -52,3 +66,8 @@ write its name or paths into committed files.
   by digest. See `tools-plugin:apptainer`.
 - **AV1 encoding** uses the BtbN static ffmpeg (`get_ffmpeg.sh`); distro ffmpeg builds often
   lack `libsvtav1`.
+- **Headless OpenGL in an image under `apptainer --nv`**: load glvnd's `libOpenGL.so.0` and
+  `libEGL.so.1`, which `--nv` binds with the NVIDIA vendor libraries
+  (`moderngl.create_standalone_context(backend="egl", libgl="libOpenGL.so.0",
+  libegl="libEGL.so.1")`). The default `libGL.so` needs X11 libraries that a slim image does
+  not have, and fails with `libGL.so not loaded`.
