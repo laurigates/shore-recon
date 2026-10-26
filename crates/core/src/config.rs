@@ -128,12 +128,19 @@ pub enum CameraPath {
     Drone,
 }
 
-/// The showcase video rendered from the splat (ADR-0008).
+/// One camera path rendered for every scene, and its loop length.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct View {
+    pub path: CameraPath,
+    pub seconds: f64,
+}
+
+/// The showcase videos of the splat and the mesh (ADR-0008), one per view.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Video {
-    pub path: CameraPath,
-    pub seconds: f64,
+    pub views: Vec<View>,
     pub fps: u32,
     pub width: u32,
     pub height: u32,
@@ -206,7 +213,6 @@ impl Config {
             ("frames.blur_threshold", self.frames.blur_threshold),
             ("post.min_component", self.post.min_component),
             ("post.floater_max_water", self.post.floater_max_water),
-            ("video.seconds", self.video.seconds),
             ("video.share_max_mib", self.video.share_max_mib),
             (
                 "gates.min_registered_ratio",
@@ -231,8 +237,19 @@ impl Config {
         if self.frames.fps <= 0.0 {
             return invalid("frames.fps must be positive");
         }
-        if self.video.seconds <= 0.0 || self.video.share_max_mib <= 0.0 {
-            return invalid("video.seconds and video.share_max_mib must be positive");
+        if self.video.views.is_empty() {
+            return invalid("video.views must list at least one view");
+        }
+        for (i, v) in self.video.views.iter().enumerate() {
+            if !(v.seconds.is_finite() && v.seconds > 0.0) {
+                return invalid("video.views[].seconds must be a positive finite number");
+            }
+            if self.video.views[..i].iter().any(|w| w.path == v.path) {
+                return invalid("video.views lists the same path twice");
+            }
+        }
+        if self.video.share_max_mib <= 0.0 {
+            return invalid("video.share_max_mib must be positive");
         }
         if self.video.fps == 0 || self.video.width == 0 || self.video.height == 0 {
             return invalid("video.fps, video.width and video.height must be positive");
@@ -392,21 +409,39 @@ mod tests {
     #[test]
     fn video_settings_are_validated() {
         let c = with_overrides("").unwrap();
-        assert_eq!((c.video.path, c.video.fps), (CameraPath::Arc, 30));
+        assert_eq!(c.video.fps, 30);
         assert_eq!(
-            with_overrides("[video]\npath = \"drone\"\n")
-                .unwrap()
-                .video
-                .path,
-            CameraPath::Drone
+            c.video.views,
+            [
+                View {
+                    path: CameraPath::Arc,
+                    seconds: 16.0
+                },
+                View {
+                    path: CameraPath::Drone,
+                    seconds: 20.0
+                },
+            ]
+        );
+        let one =
+            with_overrides("[video]\nviews = [{ path = \"drone\", seconds = 8.0 }]\n").unwrap();
+        assert_eq!(
+            one.video.views,
+            [View {
+                path: CameraPath::Drone,
+                seconds: 8.0
+            }]
         );
         for bad in [
-            "[video]\npath = \"orbit\"\n",
-            "[video]\nseconds = 0.0\n",
+            "[video]\nviews = []\n",
+            "[video]\nviews = [{ path = \"orbit\", seconds = 1.0 }]\n",
+            "[video]\nviews = [{ path = \"arc\", seconds = 0.0 }]\n",
+            "[video]\nviews = [{ path = \"arc\", seconds = nan }]\n",
+            "[video]\nviews = [{ path = \"arc\", seconds = 1.0 }, { path = \"arc\", seconds = 2.0 }]\n",
+            "[video]\npath = \"arc\"\n",
             "[video]\nshare_max_mib = -1.0\n",
             "[video]\nfps = 0\n",
             "[video]\nwidth = 0\n",
-            "[video]\nseconds = nan\n",
         ] {
             assert!(with_overrides(bad).is_err(), "{bad:?}");
         }

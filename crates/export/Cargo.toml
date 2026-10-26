@@ -9,6 +9,7 @@ publish.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 shoreline-core.workspace = true
+shoreline-video.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

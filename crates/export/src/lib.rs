@@ -25,16 +25,18 @@ const REVISION: u32 = 1;
 /// Every stage, in pipeline order: the report covers them all.
 const DEPS: &[&str] = &["frames", "masks", "sfm", "dense", "splat", "post", "video"];
 
-/// `(stage, file)` deliverables, copied under the same name.
-pub const DELIVERABLES: &[(&str, &str)] = &[
-    ("post", "model.glb"),
-    ("post", "splat.ply"),
-    ("post", "water_plane.json"),
-    ("video", "showcase.mp4"),
-    ("video", "showcase-share.mp4"),
-    ("video", "mesh.mp4"),
-    ("video", "mesh-share.mp4"),
-];
+/// The post stage's deliverables.
+pub const POST_FILES: &[&str] = &["model.glb", "splat.ply", "water_plane.json"];
+
+/// `(stage, file)` deliverables, copied under the same name: post's files,
+/// then every video the config's views produce.
+pub fn deliverables(config: &Config) -> Vec<(&'static str, String)> {
+    let post = POST_FILES.iter().map(|f| ("post", (*f).to_owned()));
+    let video = shoreline_video::video_files(&config.video)
+        .into_iter()
+        .map(|f| ("video", f));
+    post.chain(video).collect()
+}
 
 pub const REPORT: &str = "report.json";
 
@@ -136,16 +138,13 @@ impl Stage for Export {
     }
 
     fn run(&self, ctx: &RunContext, inputs: &Inputs, out_dir: &Path) -> Result<StageRun> {
-        let mut deliverables = Vec::new();
-        for &(stage, file) in DELIVERABLES {
-            let from = inputs[stage].dir.join(file);
-            let to = out_dir.join(file);
+        let mut delivered = Vec::new();
+        for (stage, file) in deliverables(&ctx.config) {
+            let from = inputs[stage].dir.join(&file);
+            let to = out_dir.join(&file);
             link_or_copy(&from, &to)?;
             let bytes = std::fs::metadata(&to).map_err(io_error(&to))?.len();
-            deliverables.push(Deliverable {
-                file: file.to_owned(),
-                bytes,
-            });
+            delivered.push(Deliverable { file, bytes });
         }
 
         let mut stages = Vec::new();
@@ -166,7 +165,7 @@ impl Stage for Export {
             config: ctx.config.clone(),
             stages,
             water_plane,
-            deliverables,
+            deliverables: delivered,
         };
         let path = out_dir.join(REPORT);
         let json = serde_json::to_string_pretty(&report).expect("report serialises");
@@ -233,19 +232,18 @@ mod tests {
     fn run_gathers_deliverables_and_every_stage_into_the_report() {
         let tmp = tempfile::tempdir().unwrap();
         let mut inputs = Inputs::new();
+        let all = deliverables(&config());
         for &stage in DEPS {
-            let files: Vec<(&str, &str)> = DELIVERABLES
+            let files: Vec<(&str, &str)> = all
                 .iter()
                 .filter(|(s, _)| *s == stage)
-                .map(|&(_, f)| {
-                    (
-                        f,
-                        if f.ends_with(".json") {
-                            "{\"plane\": 1}"
-                        } else {
-                            "data"
-                        },
-                    )
+                .map(|(_, f)| {
+                    let content = if f.ends_with(".json") {
+                        "{\"plane\": 1}"
+                    } else {
+                        "data"
+                    };
+                    (f.as_str(), content)
                 })
                 .collect();
             inputs.insert(stage, output(tmp.path(), stage, &files));
@@ -256,9 +254,10 @@ mod tests {
         std::fs::create_dir_all(&out).unwrap();
         let run = Export.run(&ctx, &inputs, &out).unwrap();
 
-        for (_, f) in DELIVERABLES {
+        for (_, f) in &all {
             assert!(out.join(f).is_file(), "{f}");
         }
+        assert!(all.iter().any(|(_, f)| f == "mesh-drone.mp4"));
         let report: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(out.join(REPORT)).unwrap()).unwrap();
         assert_eq!(report["dataset"], "reposalmi-laajasalo");
@@ -280,10 +279,7 @@ mod tests {
         let tool = &report["stages"][0]["tools"][0];
         assert_eq!(tool["seconds"], 1.5);
         assert!(tool.get("argv").is_none() && tool.get("host").is_none());
-        assert_eq!(
-            report["deliverables"].as_array().unwrap().len(),
-            DELIVERABLES.len()
-        );
+        assert_eq!(report["deliverables"].as_array().unwrap().len(), all.len());
         assert!(run.metrics[DELIVERABLE_MIB] > 0.0);
     }
 }

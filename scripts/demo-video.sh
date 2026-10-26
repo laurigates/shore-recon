@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Assemble the v1 demo video from the pipeline's deliverables: a title card, then for each
-# dataset the splat (`showcase.mp4`) and the mesh with its water (`mesh.mp4`) from its latest
-# `work/<dataset>/export/<fingerprint>/`, joined with crossfades, with one MP4 chapter per part
+# dataset the splat and the mesh with its water along every view (`<scene>-<path>.mp4`, the
+# views listed in its report.json) from its latest `work/<dataset>/export/<fingerprint>/`,
+# joined with crossfades, with one MP4 chapter per part
 # and a timeline bar under the picture for seeking (scripts/timeline_bar.py, ADR-0013).
 # Also writes a share copy under the attachment limit, and fails if either file lacks the bar
 # or a chapter.
 # Usage: demo-video.sh <out.mp4> <dataset>...
-# Needs ffmpeg with libsvtav1, ImageMagick (`magick`) for the title card, and uv for the bar.
+# Needs ffmpeg with libsvtav1, jq, ImageMagick (`magick`) for the title card, and uv for the bar.
 set -euo pipefail
 
 out=$1
@@ -26,13 +27,17 @@ for ds in "$@"; do
     [[ -n $dir ]] || { echo "no export output for $ds; run the pipeline first" >&2; exit 1; }
     side=${ds##*-}
     side_names+=("${side^} side")
-    for part in "showcase.mp4:splat" "mesh.mp4:mesh and water plane"; do
-        clip=$dir${part%%:*}
-        [[ -f $clip ]] || { echo "$clip not found" >&2; exit 1; }
-        inputs+=("$clip")
-        labels+=("${side^} side · ${part#*:}")
-        durations+=("$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$clip")")
-        echo "$ds: $clip" >&2
+    mapfile -t paths < <(jq -r '.config.video.views[].path' "${dir}report.json")
+    ((${#paths[@]} > 0)) || { echo "${dir}report.json lists no video views" >&2; exit 1; }
+    for scene in splat mesh; do
+        for path in "${paths[@]}"; do
+            clip=$dir$scene-$path.mp4
+            [[ -f $clip ]] || { echo "$clip not found" >&2; exit 1; }
+            inputs+=("$clip")
+            labels+=("${side^} side · $scene · $path")
+            durations+=("$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$clip")")
+            echo "$ds: $clip" >&2
+        done
     done
 done
 
