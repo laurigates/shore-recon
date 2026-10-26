@@ -96,7 +96,7 @@ flowchart LR
   - Raise `SiftExtraction.max_num_features`.
   - Enable DSP-SIFT.
   - Learned features are available as an alternative backend.
-- Metrics come from `colmap model_analyzer`.
+- Metrics are computed from the model files with COLMAP's definitions ([ADR-0010](adr/0010-sfm-metrics-from-the-model.md)).
 
 ### dense / splat
 
@@ -248,9 +248,9 @@ max_reproj_error_px  = 1.0
 
 | Metric                                 | Source           | v1 threshold      |
 |----------------------------------------|------------------|-------------------|
-| Registered images / total              | `model_analyzer` | ≥ 0.85            |
-| Mean reprojection error                | `model_analyzer` | ≤ 1.0 px          |
-| Mean track length                      | `model_analyzer` | ≥ 3               |
+| Registered images / input frames       | sfm model        | ≥ 0.85            |
+| Mean reprojection error                | sfm model        | ≤ 1.0 px          |
+| Mean track length                      | sfm model        | ≥ 3               |
 | Masked fraction per image              | masks            | warn if > 0.7     |
 | Geometry below water plane after post  | post             | 0                 |
 
