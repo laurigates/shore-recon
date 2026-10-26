@@ -500,7 +500,11 @@ dependencies = [
 name = "shoreline-dense"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "shoreline-core",
+ "shoreline-sfm",
+ "tempfile",
+ "toml",
 ]
 
 [[package]]
@@ -540,9 +544,11 @@ dependencies = [
  "anyhow",
  "clap",
  "shoreline-core",
+ "shoreline-dense",
  "shoreline-frames",
  "shoreline-masks",
  "shoreline-sfm",
+ "shoreline-splat",
  "toml",
 ]
 
@@ -550,6 +556,7 @@ dependencies = [
 name = "shoreline-sfm"
 version = "0.1.0"
 dependencies = [
+ "image",
  "serde_json",
  "shoreline-core",
  "tempfile",
@@ -560,7 +567,11 @@ dependencies = [
 name = "shoreline-splat"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "shoreline-core",
+ "shoreline-sfm",
+ "tempfile",
+ "toml",
 ]
 
 [[package]]
