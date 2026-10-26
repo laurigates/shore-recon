@@ -304,8 +304,11 @@ impl Tool {
         Ok(ssh(&remote.host, env.into_iter().chain(vars).chain(words)))
     }
 
-    /// The file transfers around a remote run of `inv`; `None` for local tools.
-    pub fn sync(&self, inv: &Invocation) -> Result<Option<Sync>> {
+    /// The file transfers around a remote run of `inv` that logs to `log`;
+    /// `None` for local tools. A log inside a mount is excluded both ways: it
+    /// is written locally during the run, and pulling the host's copy back
+    /// would overwrite it.
+    pub fn sync(&self, inv: &Invocation, log: &Path) -> Result<Option<Sync>> {
         self.spec.validate(&self.name)?;
         let Some(remote) = &self.spec.remote else {
             return Ok(None);
@@ -321,9 +324,15 @@ impl Tool {
             s.push(slash(p));
             s
         };
-        let rsync = |args: &[&str], from: OsString, to: OsString| {
+        let rsync = |args: &[&str], dir: &Path, from: OsString, to: OsString| {
             let mut cmd = Command::new("rsync");
-            cmd.args(args).arg(from).arg(to);
+            cmd.args(args);
+            if let Ok(rel) = log.strip_prefix(dir) {
+                let mut exclude = OsString::from("--exclude=/");
+                exclude.push(rel);
+                cmd.arg(exclude);
+            }
+            cmd.arg(from).arg(to);
             cmd
         };
         let mirrors = inv.mounts.iter().map(|d| (d, remote.mirror(d)));
@@ -336,10 +345,10 @@ impl Tool {
             prepare: ssh(&remote.host, mkdir),
             push: mirrors
                 .clone()
-                .map(|(d, m)| rsync(&["-a", "--delete"], slash(d), at_host(&m)))
+                .map(|(d, m)| rsync(&["-a", "--delete"], d, slash(d), at_host(&m)))
                 .collect(),
             pull: mirrors
-                .map(|(d, m)| rsync(&["-a"], at_host(&m), slash(d)))
+                .map(|(d, m)| rsync(&["-a"], d, at_host(&m), slash(d)))
                 .collect(),
         }))
     }
@@ -386,7 +395,7 @@ impl Tool {
     /// A non-zero exit of any step is an error that names the log.
     pub fn run(&self, inv: &Invocation, log: &Path) -> Result<ToolRecord> {
         let mut cmd = self.command(inv)?;
-        let sync = self.sync(inv)?;
+        let sync = self.sync(inv, log)?;
         let argv = argv(&cmd);
         let io = |path: &Path| {
             let path = path.to_owned();
@@ -661,10 +670,13 @@ mod tests {
     }
 
     #[test]
-    fn remote_sync_mirrors_each_mount_both_ways() {
+    fn remote_sync_mirrors_each_mount_both_ways_except_the_log() {
+        // The log is written locally while the tool runs, so syncing it would
+        // overwrite it with the host's stale copy.
         let inv = Invocation::new(["help"]).mount("/work/a").mount("/data");
+        let log = Path::new("/work/a/logs/x.log");
         let sync = remote(container(Runtime::Apptainer, false))
-            .sync(&inv)
+            .sync(&inv, log)
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -682,26 +694,33 @@ mod tests {
         assert_eq!(
             argvs(&sync.push),
             [
-                [
+                vec![
                     "rsync",
                     "-a",
                     "--delete",
+                    "--exclude=/logs/x.log",
                     "/work/a/",
                     "gpu:/srv/mirror/work/a/"
                 ],
-                ["rsync", "-a", "--delete", "/data/", "gpu:/srv/mirror/data/"],
+                vec!["rsync", "-a", "--delete", "/data/", "gpu:/srv/mirror/data/"],
             ]
         );
         assert_eq!(
             argvs(&sync.pull),
             [
-                ["rsync", "-a", "gpu:/srv/mirror/work/a/", "/work/a/"],
-                ["rsync", "-a", "gpu:/srv/mirror/data/", "/data/"],
+                vec![
+                    "rsync",
+                    "-a",
+                    "--exclude=/logs/x.log",
+                    "gpu:/srv/mirror/work/a/",
+                    "/work/a/"
+                ],
+                vec!["rsync", "-a", "gpu:/srv/mirror/data/", "/data/"],
             ]
         );
         assert!(
             container(Runtime::Apptainer, false)
-                .sync(&inv)
+                .sync(&inv, log)
                 .unwrap()
                 .is_none()
         );
@@ -715,7 +734,7 @@ mod tests {
             let inv = Invocation::default().mount(bad);
             let err = tool.command(&inv).unwrap_err();
             assert!(matches!(&err, Error::Tools(m) if m.contains(bad)), "{err}");
-            assert!(tool.sync(&inv).is_err(), "{bad}");
+            assert!(tool.sync(&inv, Path::new("/x.log")).is_err(), "{bad}");
         }
     }
 
@@ -1014,7 +1033,8 @@ mod tests {
                 input.display(),
                 output.display()
             );
-            let log = work.join("remote.log");
+            // Stages log inside their output mount; the log must keep the tool output.
+            let log = output.join("logs/remote.log");
             let inv = Invocation::new(["-c", &script])
                 .mount(&input)
                 .mount(&output);
