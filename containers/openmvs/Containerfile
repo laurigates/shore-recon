@@ -52,10 +52,12 @@ RUN cmake -S openMVS -B openMVS/build -DCMAKE_BUILD_TYPE=Release -DVCG_ROOT=/src
     && cmake --install openMVS/build
 
 # The Debian packages that own the binaries' shared libraries, for the runtime stage.
-# libcuda comes from the host driver at run time (apptainer --nv).
-RUN ldd /usr/local/bin/OpenMVS/* | awk '/=> \// {print $3}' | sort -u \
+# Paths are resolved first: with Ubuntu's merged /usr, ldd reports /lib/... while dpkg
+# records /usr/lib/.... libcuda comes from the host driver at run time (apptainer --nv),
+# and OpenCV from /usr/local is copied, not installed.
+RUN ldd /usr/local/bin/OpenMVS/* | awk '/=> \// {print $3}' | xargs -r readlink -f | sort -u \
         | xargs -r dpkg -S 2>/dev/null | cut -d: -f1 | sort -u > /runtime-packages \
-    && cat /runtime-packages
+    && cat /runtime-packages && test -s /runtime-packages
 
 FROM nvidia/cuda:12.8.1-runtime-ubuntu24.04@sha256:ebef3c171eeef0298e4eb2e4be843105edf3b8b0ac45e0b43acee358e8046867
 
