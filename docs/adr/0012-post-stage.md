@@ -50,9 +50,11 @@ one.
 3. **Mesh.** Faces with any vertex below the plane are removed. So are connected components
    (positions welded by exact equality, because texture seams duplicate vertices) with fewer than
    `post.min_component` of the faces. The result is decimated to `post.target_faces` with
-   meshoptimizer, which collapses onto existing vertices, so UVs stay valid. The first pass keeps
-   seams; if seams block the target, a second pass collapses across them, weighted by UV error,
-   and the `decimation_across_seams` metric records it. The texture is downscaled to
+   meshoptimizer, which collapses onto existing vertices and keeps texture seams, so every face
+   keeps UVs from one atlas chart. Seams can stop it above the target, which the gate reports as
+   a warning. Collapsing across seams (meshoptimizer's `Permissive` with UV weights) reached the
+   target but left faces whose corners sample different charts: black speckles over the
+   vartiosaari deck in the mesh video. The texture is downscaled to
    `post.texture_max_size` (4096) and embedded as JPEG (quality 90). The water is a separate node:
    a rectangle around the mesh with a margin of twice its extent and an alpha-blended material.
 4. **Splat.** A Gaussian is removed when its centre is below the plane, when no training view sees
@@ -71,12 +73,13 @@ one.
   | | laajasalo | vartiosaari |
   |---|---|---|
   | plane inliers / waterline points | 803 / 2,112 | 473 / 1,708 |
-  | mesh faces in → below water → out | 1,959,305 → 22,372 → 500,000 | 3,032,860 → 18,451 → 499,994 |
-  | small components removed | 23 | 45 |
+  | mesh faces in → below water → out | 1,972,135 → 22,426 → 499,997 | 3,024,735 → 18,601 → 740,903 |
+  | small components removed | 18 | 45 |
   | Gaussians in → below / unseen / over water → kept | 595,136 → 9,304 / 2,064 / 4,424 → 579,344 | 445,500 → 6,938 / 1,621 / 3,017 → 433,924 |
 
-  Vartiosaari needs the cross-seam pass to reach 500,000 faces: the seam-keeping pass stops at
-  743,787.
+  The mesh rows are from the re-textured meshes (OpenMVS with the cdcseacave/openMVS#1251
+  fix). Vartiosaari's seam-keeping decimation stops at 740,903 faces, above the 500,000 target. Decimating before texturing in the dense
+  stage is the way to reach the target.
 - The stage runs on this machine and needs no tools: about 12 s per dataset.
 - A capture without a level gimbal (handheld phone) fails the tilt gate. It then needs a fixed
   height, or another source for the normal.
