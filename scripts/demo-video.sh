@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 # Assemble the v1 demo video from the pipeline's deliverables: a title card, then for each
 # dataset the splat (`showcase.mp4`) and the mesh with its water (`mesh.mp4`) from its latest
-# `work/<dataset>/export/<fingerprint>/`, joined with crossfades, with one MP4 chapter per part.
-# Also writes a share copy under the attachment limit.
+# `work/<dataset>/export/<fingerprint>/`, joined with crossfades, with one MP4 chapter per part
+# and a timeline bar under the picture for seeking (scripts/timeline_bar.py, ADR-0013).
+# Also writes a share copy under the attachment limit, and fails if either file lacks the bar
+# or a chapter.
 # Usage: demo-video.sh <out.mp4> <dataset>...
-# Needs ffmpeg with libsvtav1 and ImageMagick (`magick`) for the title card.
+# Needs ffmpeg with libsvtav1, ImageMagick (`magick`) for the title card, and uv for the bar.
 set -euo pipefail
 
 out=$1
 shift
 (($# > 0)) || { echo "usage: $0 <out.mp4> <dataset>..." >&2; exit 1; }
 
-W=1920 H=1080 FPS=30 TITLE_S=4 FADE=0.5
+W=1920 H=1080 FPS=30 TITLE_S=4 FADE=0.5 BAR=80
 FONT=${SHORELINE_DEMO_FONT:-/System/Library/Fonts/Helvetica.ttc}
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -73,14 +75,28 @@ graph+="[$prev]fade=t=out:st=$(echo "$offset - $FADE" | bc):d=${FADE}[out]"
 n=$((${#inputs[@]} + 1))
 
 mkdir -p "$(dirname "$out")"
+# Intermediate at higher quality: the bar pass re-encodes it.
 ffmpeg -v error -y "${args[@]}" -f ffmetadata -i "$tmp/chapters.txt" \
     -filter_complex "$graph" -map '[out]' -map_metadata $n -map_chapters $n \
-    -c:v libsvtav1 -preset 4 -crf 30 -g 60 -pix_fmt yuv420p -movflags +faststart "$out"
+    -c:v libsvtav1 -preset 6 -crf 20 -g 60 -pix_fmt yuv420p "$tmp/joined.mp4"
+uv run -q --no-project --with pillow==13.0.0 --with numpy==2.5.4 python -I \
+    "$(dirname "$0")/timeline_bar.py" "$tmp/joined.mp4" "$out" --bar "$BAR" \
+    --font "$FONT" --mono "${SHORELINE_DEMO_MONO:-/System/Library/Fonts/Menlo.ttc}"
 
 share=${out%.mp4}-share.mp4
 ffmpeg -v error -y -i "$out" -map 0:v -map_chapters 0 -map_metadata 0 -vf "scale=1280:-2:flags=lanczos" \
     -c:v libsvtav1 -preset 6 -crf 38 -g 60 -pix_fmt yuv420p -movflags +faststart "$share"
 
+# The format the process promises (ADR-0013): bar under the picture, one chapter per part.
+for f in "$out" "$share"; do
+    dims=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$f")
+    chapters=$(ffprobe -v error -show_chapters -of csv=p=0 "$f" | grep -c . || true)
+    w=${dims%,*} h=${dims#*,}
+    # Height in proportion to WxH+BAR, allowing the share copy's rounding to an even height.
+    diff=$((h * W - w * (H + BAR)))
+    ((${diff#-} <= 2 * W)) || { echo "$f is ${dims/,/x}: no timeline bar" >&2; exit 1; }
+    ((chapters == n)) || { echo "$f has $chapters chapters, expected $n" >&2; exit 1; }
+done
 for f in "$out" "$share"; do
     printf '%s\t%.1f s\t%.1f MiB\n' "$f" \
         "$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$f")" \
