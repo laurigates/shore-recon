@@ -83,7 +83,8 @@ just telegram-send work/bundle/<name>.zip "<caption>"
 - `just demo` (ADR-0013): title, then per dataset six step clips and the splat and mesh along
   every view, with chapters and the timeline bar. About 3 min for two datasets.
 - `just bundle`: per dataset, `mesh/model.glb`, `splat/splat.spz` (SPZ v3, ~8x smaller than the
-  PLY; `scripts/spz.py` fails the bundle if its round trip passes the quantisation limits),
+  PLY; `scripts/spz.py` fails the bundle if its round trip passes the quantisation limits;
+  ADR-0014),
   `water_plane.json`, `report.json` and a README.
 - Size limits: `SendUserFile` 30 MiB, Telegram bots 50 MB (`just telegram-send` refuses larger).
   The full 1920 px demo of two datasets is ~150 MB; its 1280 px share copy is ~46 MiB. For the

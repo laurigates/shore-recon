@@ -2,7 +2,7 @@
 # Bundle each dataset's 3D deliverables from its latest export into work/bundle/<dataset>.zip:
 # mesh/model.glb (mesh + water plane), splat/splat.spz (the splat as SPZ v3, about 8x smaller than
 # the PLY, via scripts/spz.py), water_plane.json, report.json and a README.txt. The videos are
-# left out: `just demo` covers them. The SPZ round trip is checked before zipping.
+# left out: `just demo` covers them. The SPZ round trip is checked before zipping (ADR-0014).
 # Usage: bundle.sh <dataset>...    Optional: SHORELINE_DEMO_PLACE, SHORELINE_DEMO_CAPTURED (README).
 # Needs jq, zip, and uv for the encoder.
 set -euo pipefail
