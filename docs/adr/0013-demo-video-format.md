@@ -21,13 +21,20 @@ asked for the same on the v1 demo and for it to be part of the process.
    titled `<group> · <part>` (for example `Laajasalo side · mesh · drone`), and there is a
    timeline bar under the picture.
    The bar is 80 px at 1920x1080, which gives a 1920x1160 frame.
-2. The bar is drawn from the chapters by `scripts/timeline_bar.py`, the spike's bar applied
-   to a finished video. It has one block per chapter, grouped and labelled by the text before
-   ` · `, the current chapter highlighted (teal for splats, amber for meshes), a playhead
-   with progress through the chapter, and elapsed / total time. Processing steps are drawn in
-   indigo. It runs under `uv` with Pillow
-   and NumPy pinned to the render image's versions. It is not drawn with ffmpeg's `drawtext`,
-   because Homebrew's ffmpeg is built without it.
+2. The bar is drawn from the chapters by `scripts/timeline_bar.py`. It has three rows:
+   - the groups (the text before the first ` · ` of each chapter title: the dataset side) over
+     their spans, the current one highlighted;
+   - a slim track with one block per chapter and no text in it, coloured by kind (indigo for
+     processing steps, teal for splats, amber for meshes), played chapters brighter than
+     upcoming ones, with a playhead and progress through the current chapter;
+   - a caption with the current chapter in full and its position in the group
+     (`Laajasalo side · 3/10 · sparse`), the next chapter, and elapsed / total time.
+
+   No label has to fit inside a block. The first design labelled every block, and on the
+   234 s demo with 21 chapters an 8 s block was about 55 px wide, so labels were cut to
+   "fra…". The bar runs under `uv` with Pillow and NumPy pinned to the render image's
+   versions. It does not use ffmpeg's `drawtext`, because Homebrew's ffmpeg is built without
+   it.
 3. `scripts/demo-video.sh` checks the full video and the share copy before it reports
    success: the frame height has to include the bar, and the chapter count has to equal the
    number of parts.
