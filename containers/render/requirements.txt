@@ -1,0 +1,19 @@
+# Direct dependencies of the render image. torch 2.9.1 on PyPI is the CUDA 12.8 build, which
+# matches the build stage's toolkit (the Containerfile asserts it). gsplat 1.5.3 is the version
+# the M0 spike rendered with; PyPI's gsplat wheel has no compiled extension (it JIT-compiles at
+# first use), so the Containerfile builds it from the sdist, pinned by sha256, for sm_89.
+# requirements.lock pins everything else with hashes; regenerate it after changing this file
+# (BUILD_NO_CUDA lets uv read gsplat's metadata without torch):
+#   BUILD_NO_CUDA=1 uv pip compile containers/render/requirements.txt --python-version 3.12 \
+#     --python-platform x86_64-manylinux_2_28 --generate-hashes --no-emit-package gsplat \
+#     -o containers/render/requirements.lock
+torch==2.9.1
+gsplat==1.5.3
+numpy==2.5.4
+pillow==13.0.0
+plyfile==1.1.5
+# gsplat imports packaging at module load without declaring it.
+packaging==26.3
+# gsplat's build: setuptools for setup.py, ninja for torch's extension builder.
+setuptools==84.2.1
+ninja==1.13.2
