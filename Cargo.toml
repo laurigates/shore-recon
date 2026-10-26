@@ -16,12 +16,15 @@ shoreline-sfm = { path = "crates/sfm" }
 shoreline-splat = { path = "crates/splat" }
 shoreline-dense = { path = "crates/dense" }
 shoreline-video = { path = "crates/video" }
+shoreline-post = { path = "crates/post" }
 anyhow = "=1.0.104"
 blake3 = "=1.8.7"
 clap = { version = "=4.6.7", features = ["derive", "env"] }
+meshopt = { version = "=0.7.0", default-features = false }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
 tempfile = "=3.27.0"
+gltf = { version = "=1.4.1", default-features = false, features = ["utils"] }
 image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg"] }
 thiserror = "=2.0.21"
 toml = "=1.1.8+spec-1.1.0"
