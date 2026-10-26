@@ -5,8 +5,9 @@
 # views listed in its report.json) from its latest `work/<dataset>/export/<fingerprint>/`,
 # joined with crossfades, with one MP4 chapter per part
 # and a timeline bar under the picture for seeking (scripts/timeline_bar.py, ADR-0013).
-# Also writes a share copy under the attachment limit, and fails if either file lacks the bar
-# or a chapter.
+# Also writes a 1280 px share copy, and fails if either file lacks the bar or a chapter. The share
+# copy of a long demo can exceed chat upload limits (Telegram bots: 50 MB); the script reports
+# the size.
 # Usage: demo-video.sh <out.mp4> <dataset>...
 # Needs ffmpeg with libsvtav1, jq, ImageMagick (`magick`) for the title card, and uv for the bar.
 set -euo pipefail
@@ -51,13 +52,17 @@ for ds in "$@"; do
     done
 done
 
-# Title card (colours match the showcase sidebar).
+# Title card (colours match the showcase sidebar). The place and capture date are optional:
+# SHORELINE_DEMO_PLACE ("Reposalmi pier, Helsinki") and SHORELINE_DEMO_CAPTURED
+# ("drone capture 2026-10-23").
 sides=$(printf '%s · ' "${side_names[@]}")
+line2="Water-aware splats and meshes${SHORELINE_DEMO_PLACE:+ · $SHORELINE_DEMO_PLACE}"
+line3="${sides% · }${SHORELINE_DEMO_CAPTURED:+ · $SHORELINE_DEMO_CAPTURED}"
 magick -size ${W}x${H} xc:'rgb(10,12,16)' \
     -fill 'rgb(20,184,166)' -draw "rectangle 160,430 168,650" \
     -font "$FONT" -fill white -pointsize 84 -annotate +200+510 'shoreline-recon v1' \
-    -fill 'rgb(205,210,220)' -pointsize 40 -annotate +200+580 'Water-aware splats and meshes · Reposalmi pier, Helsinki' \
-    -fill 'rgb(150,156,168)' -pointsize 30 -annotate +200+640 "${sides% · } · drone capture 2026-10-23" \
+    -fill 'rgb(205,210,220)' -pointsize 40 -annotate +200+580 "$line2" \
+    -fill 'rgb(150,156,168)' -pointsize 30 -annotate +200+640 "$line3" \
     "$tmp/title.png"
 
 # Filter graph: title, then each clip, crossfaded; all normalised to WxH@FPS yuv420p.

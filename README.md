@@ -52,6 +52,13 @@ The M0 spike ran end to end with the scripts in [`spike/m0/`](spike/m0/README.md
 driven by `just` (GPU recipes need a CUDA host: see `.env.example`). Findings:
 [ADR-0002](docs/adr/0002-m0-spike-findings.md).
 
+## Processing a new capture
+
+Copy the clip to `data/raw/<name>.mp4`, write `configs/<name>.toml` (`[dataset] name` and
+`input`), set `SHORELINE_DATASETS`, then `just overnight`, `just demo` and `just bundle`. The
+`process-capture` project skill (`.claude/skills/process-capture/SKILL.md`) has the whole
+runbook: footage checks, timings, result checks and delivery.
+
 ## Usage
 
 ```sh
