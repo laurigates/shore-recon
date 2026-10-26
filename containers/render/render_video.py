@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render a seamless looping showcase video of a Gaussian splat or a mesh, with a stats sidebar, as AV1.
+"""Render a seamless looping showcase video of a splat, mesh, point cloud or image set, with a sidebar, as AV1.
 
 Ported from the M0 spike's spike/m0/remote/render_orbit.py (ADR-0002 decision 6, ADR-0008, #29).
 
@@ -11,9 +11,16 @@ Ported from the M0 spike's spike/m0/remote/render_orbit.py (ADR-0002 decision 6,
 Inputs
   scene       A .ply: INRIA-layout Gaussian splat (Brush export): x y z, f_dc_*, f_rest_*,
               opacity, scale_*, rot_*; rendered with gsplat (CUDA).
-              A .glb: the post stage's model.glb (ADR-0012): node 0 a textured triangle mesh
-              (POSITION, TEXCOORD_0, embedded image), optional node 1 the water surface (POSITION),
-              in the model frame; rendered with OpenGL over headless EGL. Needs --frame.
+              A .glb: a textured triangle mesh in node 0 (POSITION, TEXCOORD_0, the image embedded
+              or next to the file), and optionally the water surface (POSITION) in node 1;
+              rendered with OpenGL over headless EGL. The post stage's model.glb is in the model
+              frame and needs --frame; the dense stage's mesh_textured.glb is in the
+              reconstruction frame and takes no --frame.
+              Any other .ply (x y z, red green blue; list properties are skipped, as in OpenMVS's
+              scene_dense.ply), or a COLMAP points3D.bin: a point cloud, drawn with OpenGL. A
+              points3D.bin also gets the cameras of sparse_dir drawn as frusta.
+              A directory of images: a slideshow of them in name order, spread over --seconds
+              (each image is fitted into the view and letterboxed). No camera path.
   --frame     The post stage's water_plane.json; its model_from_reconstruction matrix moves the
               cameras into the model frame of a .glb scene.
   sparse_dir  COLMAP binary model (cameras.bin, images.bin) of undistorted PINHOLE or
@@ -52,7 +59,7 @@ def die(msg):
 
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(prog="render_video", description=__doc__.split("\n\n")[0])
-    ap.add_argument("ply", type=Path, help="splat .ply or mesh .glb")
+    ap.add_argument("ply", type=Path, help="splat or point-cloud .ply, mesh .glb, points3D.bin, or an image directory")
     ap.add_argument("model", type=Path, help="COLMAP binary model directory (sparse/0)")
     ap.add_argument("meta", type=Path, help="sidebar content (JSON, see module docstring)")
     ap.add_argument("out", type=Path, help="output .mp4")
@@ -81,10 +88,28 @@ def parse_args(argv=None):
     a.frames = round(a.seconds * a.fps)
     if a.frames < 2:
         ap.error("the video needs at least two frames")
-    a.mesh = a.ply.suffix.lower() == ".glb"
-    if a.mesh != (a.frame is not None):
-        ap.error("--frame goes with a .glb scene, and a .glb scene needs --frame")
+    a.kind = scene_kind(a.ply)
+    if a.frame is not None and a.kind != "mesh":
+        ap.error("--frame goes with a .glb scene")
     return a
+
+
+def scene_kind(path):
+    """splat | points | mesh | images, from the path (and a PLY's header)."""
+    if path.is_dir():
+        return "images"
+    suffix = path.suffix.lower()
+    if suffix == ".glb":
+        return "mesh"
+    if suffix == ".bin":
+        return "points"
+    if suffix == ".ply":
+        try:
+            head = path.open("rb").read(65536)
+        except OSError as e:
+            die(f"cannot read {path}: {e}")
+        return "splat" if b"property float f_dc_0" in head.split(b"end_header")[0] else "points"
+    die(f"{path}: unknown scene type (want .ply, .glb, points3D.bin or a directory)")
 
 
 # ---------- cameras (COLMAP binary model) ----------
@@ -416,9 +441,12 @@ def load_glb(path):
     if not nodes or nodes[0][2] is None:
         die(f"{path}: node 0 must be a textured mesh")
     image = doc["images"][0]
-    if "bufferView" not in image:
-        die(f"{path}: the texture must be embedded")
-    return nodes, view(image["bufferView"])
+    if "bufferView" in image:
+        return nodes, view(image["bufferView"])
+    uri = image.get("uri", "")
+    if not uri or ":" in uri or uri.startswith("/"):
+        die(f"{path}: texture must be embedded or a relative file, got {uri!r}")
+    return nodes, (path.parent / uri).read_bytes()
 
 
 def load_frame(path):
@@ -479,15 +507,36 @@ def gl_projection(f, w, h, near, far):
 CV_TO_GL = np.diag([1.0, -1.0, -1.0, 1.0])  # OpenCV camera (x right, y down, z forward) -> OpenGL
 
 
-def mesh_renderer(path, T, f, w, h, samples=8):
-    """A function from an OpenCV view matrix (world = reconstruction frame) to an RGB frame."""
+def gl_context():
+    import moderngl
+
+    # Apptainer's --nv binds glvnd's libOpenGL and libEGL; libGL would need X11 libraries.
+    return moderngl.create_standalone_context(backend="egl", libgl="libOpenGL.so.0", libegl="libEGL.so.1")
+
+
+def gl_targets(ctx, w, h, samples=8):
+    """A multisampled framebuffer to draw into, and a resolve target to read from."""
+    msaa = ctx.framebuffer(color_attachments=[ctx.renderbuffer((w, h), 4, samples=samples)],
+                           depth_attachment=ctx.depth_renderbuffer((w, h), samples=samples))
+    out = ctx.framebuffer(color_attachments=[ctx.renderbuffer((w, h), 4)])
+
+    def read():
+        ctx.copy_framebuffer(out, msaa)
+        rgb = np.frombuffer(out.read(components=3), dtype=np.uint8).reshape(h, w, 3)
+        return rgb[::-1]  # OpenGL rows run bottom-up
+
+    return msaa, read
+
+
+def mesh_renderer(path, T, f, w, h):
+    """A function from an OpenCV view matrix (world = reconstruction frame) to an RGB frame.
+    T maps the reconstruction frame to the mesh's frame (identity for a mesh already in it)."""
     import moderngl
     from PIL import Image
     import io
 
     nodes, image = load_glb(path)
-    # Apptainer's --nv binds glvnd's libOpenGL and libEGL; libGL would need X11 libraries.
-    ctx = moderngl.create_standalone_context(backend="egl", libgl="libOpenGL.so.0", libegl="libEGL.so.1")
+    ctx = gl_context()
     tex_img = Image.open(io.BytesIO(image)).convert("RGB")
     tex = ctx.texture(tex_img.size, 3, tex_img.tobytes())
     tex.build_mipmaps()
@@ -513,9 +562,7 @@ def mesh_renderer(path, T, f, w, h, samples=8):
     radius = float(np.hypot(hi[0] - lo[0], hi[2] - lo[2]) / 2)
     P = gl_projection(f, w, h, 0.002 * diag, 20 * diag)
     T_inv = np.linalg.inv(T)
-    msaa = ctx.framebuffer(color_attachments=[ctx.renderbuffer((w, h), 4, samples=samples)],
-                           depth_attachment=ctx.depth_renderbuffer((w, h), samples=samples))
-    out = ctx.framebuffer(color_attachments=[ctx.renderbuffer((w, h), 4)])
+    msaa, read = gl_targets(ctx, w, h)
 
     def render(V):
         Vm = V @ T_inv  # camera from model
@@ -538,12 +585,191 @@ def mesh_renderer(path, T, f, w, h, samples=8):
             water_prog["centre"].value = centre
             water_prog["fade"].value = (1.2 * radius, 2.5 * radius)
             water_vao.render()
-        ctx.copy_framebuffer(out, msaa)
-        rgb = np.frombuffer(out.read(components=3), dtype=np.uint8).reshape(h, w, 3)
-        return rgb[::-1]  # OpenGL rows run bottom-up
+        return read()
 
     count = sum(len(n[3]) // 3 for n in nodes)
     return render, f"{count} faces"
+
+
+# ---------- point clouds ----------
+PLY_TYPES = {"char": "i1", "int8": "i1", "uchar": "u1", "uint8": "u1", "short": "<i2", "int16": "<i2",
+             "ushort": "<u2", "uint16": "<u2", "int": "<i4", "int32": "<i4", "uint": "<u4", "uint32": "<u4",
+             "float": "<f4", "float32": "<f4", "double": "<f8", "float64": "<f8"}
+
+
+def read_points3d_bin(path):
+    """(xyz float32 Nx3, rgb uint8 Nx3) from a COLMAP points3D.bin."""
+    xyz, rgb = [], []
+    with open(path, "rb") as f:
+        (count,) = struct.unpack("<Q", f.read(8))
+        for _ in range(count):
+            _pid, x, y, z, r, g, b, _err, track = struct.unpack("<QdddBBBdQ", f.read(51))
+            f.seek(8 * track, os.SEEK_CUR)
+            xyz.append((x, y, z))
+            rgb.append((r, g, b))
+    return np.array(xyz, np.float32), np.array(rgb, np.uint8)
+
+
+def read_ply_points(path):
+    """(xyz float32 Nx3, rgb uint8 Nx3) from a binary little-endian PLY's vertex element. List
+    properties (OpenMVS's view_indices and view_weights) are walked over row by row."""
+    data = path.read_bytes()
+    end = data.find(b"end_header\n")
+    if not data.startswith(b"ply") or end < 0:
+        die(f"{path}: not a PLY file")
+    props, count, lists = [], None, False
+    for line in data[:end].decode().splitlines():
+        w = line.split()
+        if w[:2] == ["format", "ascii"] or w[:2] == ["format", "binary_big_endian"]:
+            die(f"{path}: only binary_little_endian PLY is supported")
+        if w[:2] == ["element", "vertex"]:
+            count = int(w[2])
+        elif w[:1] == ["element"] and count is not None:
+            break  # properties after the vertex element belong to other elements
+        elif w[:2] == ["property", "list"]:
+            props.append((w[4], "list", PLY_TYPES[w[2]], PLY_TYPES[w[3]]))
+            lists = True
+        elif w[:1] == ["property"]:
+            props.append((w[2], PLY_TYPES[w[1]], None, None))
+    if count is None or not {"x", "y", "z"} <= {p[0] for p in props}:
+        die(f"{path}: no vertex element with x, y, z")
+    body = data[end + len(b"end_header\n"):]
+    if not lists:
+        rows = np.frombuffer(body, dtype=[(n, t) for n, t, _, _ in props], count=count)
+    else:
+        # Rows vary in length. Walk them once for their offsets, then gather the fixed fields
+        # in one step; they must all come before the lists (as in OpenMVS's scene_dense.ply).
+        kinds = [t == "list" for _, t, _, _ in props]
+        if kinds != sorted(kinds):
+            die(f"{path}: fixed vertex properties after a list property are not supported")
+        fixed = np.dtype([(n, t) for n, t, _, _ in props if t != "list"])
+        lists = [(np.dtype(ct), np.dtype(it).itemsize) for _, t, ct, it in props if t == "list"]
+        starts = np.empty(count, np.int64)
+        off = 0
+        for i in range(count):
+            starts[i] = off
+            off += fixed.itemsize
+            for ct, isize in lists:
+                n = int.from_bytes(body[off:off + ct.itemsize], "little")
+                off += ct.itemsize + n * isize
+        raw = np.frombuffer(body, np.uint8)
+        rows = raw[starts[:, None] + np.arange(fixed.itemsize)].copy().view(fixed).reshape(count)
+    xyz = np.stack([rows["x"], rows["y"], rows["z"]], 1).astype(np.float32)
+    if {"red", "green", "blue"} <= set(rows.dtype.names):
+        rgb = np.stack([rows["red"], rows["green"], rows["blue"]], 1).astype(np.uint8)
+    else:
+        rgb = np.full((count, 3), 200, np.uint8)
+    return xyz, rgb
+
+
+POINTS_VS = """#version 330
+uniform mat4 mvp;
+uniform float size;
+in vec3 position;
+in vec3 color;
+out vec3 v_color;
+void main() { v_color = color; gl_Position = mvp * vec4(position, 1.0); gl_PointSize = size; }
+"""
+POINTS_FS = """#version 330
+in vec3 v_color;
+out vec4 color;
+void main() {
+    if (length(gl_PointCoord - vec2(0.5)) > 0.5) discard;  // round points
+    color = vec4(v_color, 1.0);
+}
+"""
+LINES_VS = """#version 330
+uniform mat4 mvp;
+in vec3 position;
+void main() { gl_Position = mvp * vec4(position, 1.0); }
+"""
+LINES_FS = """#version 330
+uniform vec4 tint;
+out vec4 color;
+void main() { color = tint; }
+"""
+
+
+def frusta(poses, intrinsics, depth):
+    """Line segments (2N x 3) of a pyramid per camera: centre to the image corners at `depth`."""
+    cw, ch, fx, fy, cx, cy = intrinsics
+    corners = np.array([[(u - cx) / fx, (v - cy) / fy, 1.0] for u, v in
+                        [(0, 0), (cw, 0), (cw, ch), (0, ch)]]) * depth
+    segs = []
+    for _, R, t in poses:
+        C = -R.T @ t
+        k = [R.T @ c + C for c in corners]
+        segs += [C, k[0], C, k[1], C, k[2], C, k[3], k[0], k[1], k[1], k[2], k[2], k[3], k[3], k[0]]
+    return np.array(segs, np.float32)
+
+
+def points_renderer(path, poses, intrinsics, f, w, h):
+    """A function from an OpenCV view matrix to an RGB frame of the point cloud; a COLMAP
+    points3D.bin also gets its cameras drawn."""
+    import moderngl
+
+    sparse = path.suffix.lower() == ".bin"
+    xyz, rgb = read_points3d_bin(path) if sparse else read_ply_points(path)
+    if not len(xyz):
+        die(f"{path}: no points")
+    lo, hi = np.percentile(xyz, [2, 98], axis=0)
+    diag = float(np.linalg.norm(hi - lo))
+    ctx = gl_context()
+    prog = ctx.program(vertex_shader=POINTS_VS, fragment_shader=POINTS_FS)
+    vao = ctx.vertex_array(prog, [(ctx.buffer(xyz.tobytes()), "3f", "position"),
+                                  (ctx.buffer((rgb.astype(np.float32) / 255).tobytes()), "3f", "color")])
+    cams = None
+    if sparse:
+        lines = ctx.program(vertex_shader=LINES_VS, fragment_shader=LINES_FS)
+        cams = ctx.vertex_array(lines, [(ctx.buffer(frusta(poses, intrinsics, 0.012 * diag).tobytes()),
+                                         "3f", "position")])
+    # Sparse points are few: draw them larger. Sizes scale with the output height.
+    size = (5.0 if sparse else 2.0) * h / 1080
+    P = gl_projection(f, w, h, 0.002 * diag, 50 * diag)
+    msaa, read = gl_targets(ctx, w, h)
+
+    def render(V):
+        mvp = (P @ CV_TO_GL @ V).astype("f4")
+        msaa.use()
+        ctx.clear(10 / 255, 12 / 255, 16 / 255, 1.0)
+        ctx.enable(moderngl.DEPTH_TEST | moderngl.PROGRAM_POINT_SIZE)
+        prog["mvp"].write(mvp.T.tobytes())
+        prog["size"].value = size
+        vao.render(moderngl.POINTS)
+        if cams is not None:
+            cams.program["mvp"].write(mvp.T.tobytes())
+            cams.program["tint"].value = (20 / 255, 184 / 255, 166 / 255, 1.0)
+            cams.render(moderngl.LINES)
+        return read()
+
+    return render, f"{len(xyz)} points" + (f", {len(poses)} cameras" if sparse else "")
+
+
+# ---------- image sets ----------
+IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
+
+
+def images_renderer(path, w, h):
+    """A function from an image index to an RGB frame of that image, fitted and letterboxed."""
+    from PIL import Image
+
+    files = sorted(p for p in path.iterdir() if p.suffix.lower() in IMAGE_SUFFIXES)
+    if not files:
+        die(f"{path}: no images")
+    cache = {}
+
+    def render(i):
+        if i not in cache:
+            cache.clear()
+            img = Image.open(files[i]).convert("RGB")
+            scale = min(w / img.width, h / img.height)
+            img = img.resize((round(img.width * scale), round(img.height * scale)), Image.LANCZOS)
+            canvas = Image.new("RGB", (w, h), (10, 12, 16))
+            canvas.paste(img, ((w - img.width) // 2, (h - img.height) // 2))
+            cache[i] = np.asarray(canvas)
+        return cache[i]
+
+    return render, len(files)
 
 
 # ---------- encoding ----------
@@ -595,27 +821,38 @@ def share_copy(src, dst, max_mib):
 def main(argv=None):
     a = parse_args(argv)
     meta = load_meta(a.meta)
-    (_cw, ch, _fx, fy, _cx, _cy), poses = load_cameras(a.model)
+    intrinsics, poses = load_cameras(a.model)
+    _cw, ch, _fx, fy, _cx, _cy = intrinsics
     for p in FONTS.values():
         if not Path(p).is_file():
             die(f"font {p} not found (set SHORELINE_FONT_DIR)")
 
     from PIL import Image
 
-    if a.path == "arc":
-        views, label = arc_path(poses, a.frames)
-    else:
-        views, label = drone_path(poses, a.frames, a.pullback)
-    meta["sections"].append(["Camera", [["Path", label], ["Loop", f"{a.seconds:g} s · {a.fps} fps"]]])
-
-    # Sidebar on the left, splat view on the right. Focal from the training camera, scaled to the
+    # Sidebar on the left, the view on the right. Focal from the training camera, scaled to the
     # view height; fov_scale < 1 widens the field of view (zooms out).
     VW = a.W - a.sidebar
     f = fy * a.H / ch * a.fov_scale
-    if a.mesh:
-        render, count = mesh_renderer(a.ply, load_frame(a.frame), f, VW, a.H)
+    if a.kind == "images":
+        show, n_images = images_renderer(a.ply, VW, a.H)
+        # Each frame shows the image its time falls on, so the set spans the whole clip.
+        views = [min(n_images - 1, i * n_images // a.frames) for i in range(a.frames)]
+        render, count = show, f"{n_images} images"
+        label = f"{n_images} images"
+        meta["sections"].append(["Clip", [["Images", str(n_images)], ["Length", f"{a.seconds:g} s · {a.fps} fps"]]])
     else:
-        render, count = splat_renderer(a.ply, f, VW, a.H)
+        if a.path == "arc":
+            views, label = arc_path(poses, a.frames)
+        else:
+            views, label = drone_path(poses, a.frames, a.pullback)
+        meta["sections"].append(["Camera", [["Path", label], ["Loop", f"{a.seconds:g} s · {a.fps} fps"]]])
+        if a.kind == "mesh":
+            T = load_frame(a.frame) if a.frame else np.eye(4)
+            render, count = mesh_renderer(a.ply, T, f, VW, a.H)
+        elif a.kind == "points":
+            render, count = points_renderer(a.ply, poses, intrinsics, f, VW, a.H)
+        else:
+            render, count = splat_renderer(a.ply, f, VW, a.H)
     side = Image.new("RGB", (a.sidebar, a.H), (10, 12, 16))
     if a.sidebar:
         ov = panel(meta, s=a.H / 1080)

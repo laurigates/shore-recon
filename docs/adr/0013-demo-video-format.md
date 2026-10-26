@@ -14,15 +14,18 @@ asked for the same on the v1 demo and for it to be part of the process.
 
 ## Decision
 
-1. Every demo built by `just demo` has one MP4 chapter per part (the title card, then for each
-   dataset the splat and the mesh along each of `video.views`: arc and drone by default),
-   titled `<group> · <part>` (for example `Laajasalo side · mesh · drone`), and a timeline bar
-   under the picture.
+1. Every demo built by `just demo` has one MP4 chapter per part: the title card, then for each
+   dataset a clip per processing step (frames, masks, sparse, dense, raw mesh, raw splat; the
+   video stage's `step-<n>-<name>.mp4`), then the splat and the mesh along each of
+   `video.views` (arc and drone by default). Parts are
+   titled `<group> · <part>` (for example `Laajasalo side · mesh · drone`), and there is a
+   timeline bar under the picture.
    The bar is 80 px at 1920x1080, which gives a 1920x1160 frame.
 2. The bar is drawn from the chapters by `scripts/timeline_bar.py`, the spike's bar applied
    to a finished video. It has one block per chapter, grouped and labelled by the text before
    ` · `, the current chapter highlighted (teal for splats, amber for meshes), a playhead
-   with progress through the chapter, and elapsed / total time. It runs under `uv` with Pillow
+   with progress through the chapter, and elapsed / total time. Processing steps are drawn in
+   indigo. It runs under `uv` with Pillow
    and NumPy pinned to the render image's versions. It is not drawn with ffmpeg's `drawtext`,
    because Homebrew's ffmpeg is built without it.
 3. `scripts/demo-video.sh` checks the full video and the share copy before it reports

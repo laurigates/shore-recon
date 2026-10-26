@@ -36,6 +36,7 @@ floater_max_water = 0.5      # cull Gaussians seen against masked water in more 
 # One video per scene (splat, mesh) and view. arc: a sweep around the scene; drone: the
 # recorded flight, smoothed, played forward then back.
 views         = [{ path = "arc", seconds = 16.0 }, { path = "drone", seconds = 20.0 }]
+step_seconds  = 8.0      # each processing-step clip (frames, masks, sparse, dense, raw mesh, raw splat)
 fps           = 30
 width         = 1920
 height        = 1080
