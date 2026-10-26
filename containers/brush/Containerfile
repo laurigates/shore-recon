@@ -1,0 +1,29 @@
+# Splat backend for the splat stage (ADR-0011): the Brush 0.3.0 release binary,
+# checksum-verified, on Ubuntu 24.04. Brush renders through Vulkan; under
+# `apptainer exec --nv` the host's NVIDIA ICD is bound in, and its library needs
+# libX11/libXext. Mesa's software Vulkan driver is deliberately absent, so
+# without a GPU Brush fails ("No possible adapter available") instead of
+# silently training on the CPU. Built and pushed by .github/workflows/containers.yml.
+FROM ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac AS fetch
+
+ARG BRUSH_VERSION=v0.3.0
+ARG BRUSH_SHA256=4f0f9a8785d1951c62df26aae247c02c5bba32b00f40b06df4e1c9b867399e20
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl -fsSLo /tmp/brush.tar.xz \
+        "https://github.com/ArthurBrussee/brush/releases/download/${BRUSH_VERSION}/brush-app-x86_64-unknown-linux-gnu.tar.xz" \
+    && echo "${BRUSH_SHA256}  /tmp/brush.tar.xz" | sha256sum -c - \
+    && tar -xJf /tmp/brush.tar.xz -C /tmp \
+    && install -m 755 /tmp/brush-app-x86_64-unknown-linux-gnu/brush_app /usr/local/bin/brush_app
+
+FROM ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac
+
+LABEL org.opencontainers.image.source="https://github.com/laurigates/data-processing" \
+      org.opencontainers.image.description="shoreline-recon splat backend: Brush 0.3.0 (Vulkan)"
+
+RUN apt-get update && apt-get install -y --no-install-recommends libvulkan1 libx11-6 libxext6 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=fetch /usr/local/bin/brush_app /usr/local/bin/brush_app
+
+# Fails the build if the binary does not start.
+RUN brush_app --version
