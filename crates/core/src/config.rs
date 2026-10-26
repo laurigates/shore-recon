@@ -108,9 +108,16 @@ pub enum FitTag {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Post {
+    /// `"fit"`, or a fixed height along the camera-derived up axis.
     pub water_plane: WaterPlane,
+    /// Rows above an ignored mask region that count as waterline (ADR-0012).
+    pub waterline_band_px: u32,
     pub min_component: f64,
     pub target_faces: u32,
+    /// Longest edge of the texture embedded in `model.glb`.
+    pub texture_max_size: u32,
+    /// Largest fraction of a Gaussian's views that may see it against masked water.
+    pub floater_max_water: f64,
 }
 
 /// Camera path of the showcase video (`render_video --path`).
@@ -198,6 +205,7 @@ impl Config {
             ("frames.fps", self.frames.fps),
             ("frames.blur_threshold", self.frames.blur_threshold),
             ("post.min_component", self.post.min_component),
+            ("post.floater_max_water", self.post.floater_max_water),
             ("video.seconds", self.video.seconds),
             ("video.share_max_mib", self.video.share_max_mib),
             (
@@ -231,6 +239,17 @@ impl Config {
         }
         if !(0.0..=1.0).contains(&self.post.min_component) {
             return invalid("post.min_component must be within [0, 1]");
+        }
+        if !(0.0..=1.0).contains(&self.post.floater_max_water) {
+            return invalid("post.floater_max_water must be within [0, 1]");
+        }
+        if self.post.waterline_band_px == 0
+            || self.post.target_faces == 0
+            || self.post.texture_max_size == 0
+        {
+            return invalid(
+                "post.waterline_band_px, post.target_faces and post.texture_max_size must be positive",
+            );
         }
         if !(0.0..=1.0).contains(&self.gates.min_registered_ratio) {
             return invalid("gates.min_registered_ratio must be within [0, 1]");
@@ -309,15 +328,15 @@ mod tests {
     #[test]
     fn water_plane_accepts_fit_or_height() {
         let fit: Post =
-            toml::from_str("water_plane = \"fit\"\nmin_component = 0.01\ntarget_faces = 1\n")
+            toml::from_str("water_plane = \"fit\"\nwaterline_band_px = 24\nmin_component = 0.01\ntarget_faces = 1\ntexture_max_size = 8\nfloater_max_water = 0.5\n")
                 .unwrap();
         assert_eq!(fit.water_plane, WaterPlane::Fit(FitTag::Fit));
         let fixed: Post =
-            toml::from_str("water_plane = -0.5\nmin_component = 0.01\ntarget_faces = 1\n").unwrap();
+            toml::from_str("water_plane = -0.5\nwaterline_band_px = 24\nmin_component = 0.01\ntarget_faces = 1\ntexture_max_size = 8\nfloater_max_water = 0.5\n").unwrap();
         assert_eq!(fixed.water_plane, WaterPlane::Height(-0.5));
         assert!(
             toml::from_str::<Post>(
-                "water_plane = \"auto\"\nmin_component = 0.01\ntarget_faces = 1\n"
+                "water_plane = \"auto\"\nwaterline_band_px = 24\nmin_component = 0.01\ntarget_faces = 1\ntexture_max_size = 8\nfloater_max_water = 0.5\n"
             )
             .is_err()
         );

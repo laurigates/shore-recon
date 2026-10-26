@@ -12,7 +12,7 @@ pub const PIPELINE: &[(&str, &[&str])] = &[
     ("dense", &["frames", "masks", "sfm"]),
     ("splat", &["frames", "masks", "sfm"]),
     ("video", &["sfm", "splat"]),
-    ("post", &["dense", "splat"]),
+    ("post", &["masks", "sfm", "dense", "splat"]),
     ("export", &["post"]),
 ];
 

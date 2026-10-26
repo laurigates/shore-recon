@@ -12,9 +12,9 @@ Design and milestones: [docs/kickoff.md](docs/kickoff.md). Decisions:
 
 ## Status
 
-M1 to M3 are implemented, plus the showcase video. `run` takes a capture through
-`frames`, `masks`, `sfm`, `dense`, `splat` and `video`. Post-processing and export
-are M4 (#4, #5, #39, #40).
+M1 to M3 are implemented, plus the showcase video and the M4 `post` stage. `run`
+takes a capture through `frames`, `masks`, `sfm`, `dense`, `splat`, `video` and
+`post`. Export is next (#39).
 
 | Stage | Backend | Runs on | Decisions |
 |---|---|---|---|
@@ -24,6 +24,7 @@ are M4 (#4, #5, #39, #40).
 | `dense` | OpenMVS v2.4.0, native masks, textured GLB | GPU host | [ADR-0011](docs/adr/0011-splat-and-dense-images.md) |
 | `splat` | Brush 0.3.0 | GPU host | [ADR-0011](docs/adr/0011-splat-and-dense-images.md) |
 | `video` | gsplat renderer, AV1 plus a share copy | GPU host | [ADR-0008](docs/adr/0008-v1-deliverables-and-gpu-stages.md) |
+| `post` | water plane, mesh cleanup and decimation, splat floater cull | this machine | [ADR-0012](docs/adr/0012-post-stage.md) |
 
 The tool runner supports native, podman, docker and Apptainer runtimes. A
 container tool can run on a remote host over ssh, with its mounts mirrored by
