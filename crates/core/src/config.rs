@@ -23,6 +23,7 @@ pub struct Config {
     pub dense: Dense,
     pub splat: Splat,
     pub post: Post,
+    pub video: Video,
     pub gates: Gates,
 }
 
@@ -112,6 +113,27 @@ pub struct Post {
     pub target_faces: u32,
 }
 
+/// Camera path of the showcase video (`render_video --path`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CameraPath {
+    Arc,
+    Drone,
+}
+
+/// The showcase video rendered from the splat (ADR-0008).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Video {
+    pub path: CameraPath,
+    pub seconds: f64,
+    pub fps: u32,
+    pub width: u32,
+    pub height: u32,
+    /// Size limit of the share copy, in MiB (Telegram's bot upload limit is 50 MB).
+    pub share_max_mib: f64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Gates {
@@ -176,6 +198,8 @@ impl Config {
             ("frames.fps", self.frames.fps),
             ("frames.blur_threshold", self.frames.blur_threshold),
             ("post.min_component", self.post.min_component),
+            ("video.seconds", self.video.seconds),
+            ("video.share_max_mib", self.video.share_max_mib),
             (
                 "gates.min_registered_ratio",
                 self.gates.min_registered_ratio,
@@ -198,6 +222,12 @@ impl Config {
         }
         if self.frames.fps <= 0.0 {
             return invalid("frames.fps must be positive");
+        }
+        if self.video.seconds <= 0.0 || self.video.share_max_mib <= 0.0 {
+            return invalid("video.seconds and video.share_max_mib must be positive");
+        }
+        if self.video.fps == 0 || self.video.width == 0 || self.video.height == 0 {
+            return invalid("video.fps, video.width and video.height must be positive");
         }
         if !(0.0..=1.0).contains(&self.post.min_component) {
             return invalid("post.min_component must be within [0, 1]");
@@ -338,6 +368,29 @@ mod tests {
         merge(&mut t, table("[dataset]\nname = \"x\"\ninput = \"x\"\n"));
         merge(&mut t, table(overrides));
         Config::from_table(t)
+    }
+
+    #[test]
+    fn video_settings_are_validated() {
+        let c = with_overrides("").unwrap();
+        assert_eq!((c.video.path, c.video.fps), (CameraPath::Arc, 30));
+        assert_eq!(
+            with_overrides("[video]\npath = \"drone\"\n")
+                .unwrap()
+                .video
+                .path,
+            CameraPath::Drone
+        );
+        for bad in [
+            "[video]\npath = \"orbit\"\n",
+            "[video]\nseconds = 0.0\n",
+            "[video]\nshare_max_mib = -1.0\n",
+            "[video]\nfps = 0\n",
+            "[video]\nwidth = 0\n",
+            "[video]\nseconds = nan\n",
+        ] {
+            assert!(with_overrides(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]
