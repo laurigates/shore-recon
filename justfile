@@ -47,13 +47,22 @@ overnight *args: build
 [group('pipeline')]
 overnight-status:
     @log=$(ls -t tmp/runs/overnight-*.log 2>/dev/null | head -1); test -n "$log" || { echo "no overnight log yet"; exit 0; }; \
-      echo "$log"; grep -E '^(BATCH|RUN)-' "$log" || true; echo '---'; tail -5 "$log"
+      echo "$log"; grep -E '^(BATCH|RUN|SERVICE)-' "$log" || true; echo '---'; tail -5 "$log"
 
 [private]
 _batch *args:
     #!/usr/bin/env bash
     set -uo pipefail
     echo "BATCH-START $(date -Iseconds) tools=$SHORELINE_TOOLS"
+    # Optional: stop a GPU service on the host for the batch (needs passwordless sudo
+    # for exactly `/usr/bin/systemctl stop|start <unit>`); restarted on any exit.
+    if [ -n "${SHORELINE_STOP_SERVICE:-}" ]; then
+      gpu=${SHORELINE_GPU_HOST:?SHORELINE_STOP_SERVICE needs SHORELINE_GPU_HOST}
+      ctl() { ssh -o BatchMode=yes "$gpu" sudo -n /usr/bin/systemctl "$1" "$SHORELINE_STOP_SERVICE"; }
+      if ctl stop; then echo "SERVICE-STOPPED $SHORELINE_STOP_SERVICE"
+        trap 'ctl start && echo "SERVICE-STARTED $SHORELINE_STOP_SERVICE" || echo "SERVICE-START-FAILED $SHORELINE_STOP_SERVICE"' EXIT
+      else echo "SERVICE-STOP-FAILED $SHORELINE_STOP_SERVICE (running beside it)"; fi
+    fi
     failed=()
     for ds in {{datasets}}; do
       echo "RUN-START $ds $(date -Iseconds)"
