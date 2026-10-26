@@ -10,6 +10,10 @@ ARG EIGEN_REF=3.4.0
 ARG CGAL_REF=v6.0.1
 # The last nanoflann release before OpenMVS v2.4.0 (2026-01-20).
 ARG NANOFLANN_REF=v1.9.0
+# OpenMVS v2.4.0 writes JPEG XL through OpenCV (cv::IMWRITE_JPEGXL_QUALITY, OpenCV >= 4.11);
+# Ubuntu 24.04 ships OpenCV 4.6. Main modules only; Types.inl calls cv::imshow unguarded,
+# so highgui is built (headless, no GUI backend).
+ARG OPENCV_REF=4.12.0
 ARG CUDA_ARCH=89
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -17,10 +21,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential ca-certificates cmake git pkg-config \
         libboost-iostreams-dev libboost-program-options-dev libboost-serialization-dev \
         libboost-system-dev libboost-thread-dev libgmp-dev libmpfr-dev \
-        libjpeg-dev libjxl-dev libopencv-dev libpng-dev libtiff-dev zlib1g-dev \
+        libjpeg-dev libjxl-dev libpng-dev libtiff-dev zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
+RUN git clone --depth 1 --branch "${OPENCV_REF}" https://github.com/opencv/opencv.git \
+    && cmake -S opencv -B opencv/build -DCMAKE_BUILD_TYPE=Release -DWITH_JPEGXL=ON -DWITH_CUDA=OFF \
+        -DBUILD_opencv_dnn=OFF -DBUILD_opencv_gapi=OFF -DBUILD_opencv_stitching=OFF \
+        -DWITH_GTK=OFF -DWITH_QT=OFF -DWITH_FFMPEG=OFF -DWITH_GSTREAMER=OFF -DWITH_V4L=OFF \
+        -DBUILD_TESTS=OFF -DBUILD_PERF_TESTS=OFF -DBUILD_EXAMPLES=OFF -DBUILD_opencv_apps=OFF \
+        -DBUILD_opencv_python3=OFF -DBUILD_JAVA=OFF \
+    && cmake --build opencv/build -j"$(nproc)" && cmake --install opencv/build && ldconfig \
+    && rm -rf opencv
 RUN git clone --depth 1 --branch "${EIGEN_REF}" https://gitlab.com/libeigen/eigen.git \
     && cmake -S eigen -B eigen/build && cmake --install eigen/build \
     && git clone --depth 1 --branch "${CGAL_REF}" https://github.com/CGAL/cgal.git \
@@ -54,6 +66,8 @@ COPY --from=build /runtime-packages /tmp/runtime-packages
 RUN apt-get update && xargs -a /tmp/runtime-packages apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* /tmp/runtime-packages
 COPY --from=build /usr/local/bin/OpenMVS /usr/local/bin/OpenMVS
+COPY --from=build /usr/local/lib/libopencv_* /usr/local/lib/
+RUN ldconfig
 ENV PATH=/usr/local/bin/OpenMVS:$PATH
 
 # Fails the build if a tool is missing or a library other than the driver's
