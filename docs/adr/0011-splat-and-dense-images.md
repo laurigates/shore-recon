@@ -39,7 +39,9 @@ OpenMVS.
    OpenMVS v2.4.0 writes JPEG XL through `cv::IMWRITE_JPEGXL_QUALITY` (OpenCV 4.11 and later),
    and Ubuntu 24.04 ships OpenCV 4.6. 4.12.0 is an established release with JPEG XL that
    predates OpenMVS v2.4.0. The runtime stage installs only the packages
-   that own the binaries' shared libraries.
+   that own the binaries' shared libraries. OpenMVS is built at commit `eeedab7`: v2.4.0 plus
+   upstream's fix for cdcseacave/openMVS#1251, without which `TextureMesh`'s seam leveling
+   turns every textured face black (added 2026-10-26, after the first M3 runs).
 3. Both images are `linux/amd64`, built in CI and pinned by digest in the host tools file.
 4. Dense masks use OpenMVS's native support (`--mask-path`, `--ignore-mask-label 0`, black
    being ignore). Checked on laajasalo on 2026-10-26: with every mask all black, densify
