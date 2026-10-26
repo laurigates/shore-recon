@@ -1,10 +1,14 @@
-//! `video` stage: the showcase video of the splat (ADR-0008, #29).
+//! `video` stage: the showcase videos of the splat and the mesh (ADR-0008,
+//! #29).
 //!
-//! Runs the render image's `render_video` on the splat and its training
-//! cameras (the splat stage's undistorted `dataset/sparse/0`), with a sidebar
-//! built from the sfm and splat manifests. Output: `showcase.mp4`,
-//! `showcase-share.mp4` (at most `video.share_max_mib`), `meta.json` and
-//! `logs/render_video.log`.
+//! Runs the render image's `render_video` twice along the same camera path,
+//! derived from the splat's training cameras (the splat stage's undistorted
+//! `dataset/sparse/0`): on the post stage's cleaned `splat.ply`, and on its
+//! `model.glb` with the water surface (moved into the model frame by
+//! `water_plane.json`, ADR-0012). The sidebars come from the sfm and post
+//! manifests. Output: `showcase.mp4` and `mesh.mp4`, each with a `-share`
+//! copy (at most `video.share_max_mib`), `meta.json`, `mesh-meta.json` and
+//! `logs/render_{splat,mesh}.log`.
 
 use std::ffi::OsString;
 use std::path::Path;
@@ -16,19 +20,23 @@ use shoreline_core::error::io_error;
 use shoreline_core::stage::{Inputs, Metrics, StageOutput, StageRun};
 use shoreline_core::tools::Invocation;
 use shoreline_core::{Config, Error, Result, RunContext, Stage};
+use shoreline_post as post;
 use shoreline_sfm::metrics as sfm;
 
 pub const NAME: &str = "video";
 const SFM: &str = "sfm";
 const SPLAT: &str = "splat";
+const POST: &str = "post";
 const RENDER: &str = "render";
 
 /// Bump when the output changes for the same config, inputs and tool.
-const REVISION: u32 = 1;
+const REVISION: u32 = 2;
 
 /// Metric names.
 pub const VIDEO_MIB: &str = "video_mib";
 pub const SHARE_MIB: &str = "share_mib";
+pub const MESH_MIB: &str = "mesh_mib";
+pub const MESH_SHARE_MIB: &str = "mesh_share_mib";
 
 pub struct VideoStage;
 
@@ -39,20 +47,26 @@ fn path_name(path: CameraPath) -> &'static str {
     }
 }
 
-/// `render_video` arguments.
+/// `render_video` arguments: `scene` (a splat `.ply`, or a `.glb` with its
+/// `frame`) rendered to `<out>/<name>.mp4` and `<out>/<name>-share.mp4`.
 pub fn render_args(
     video: &Video,
-    splat: &Path,
+    scene: &Path,
+    frame: Option<&Path>,
     sparse: &Path,
     meta: &Path,
     out: &Path,
+    name: &str,
 ) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec![
-        splat.join("splat.ply").into(),
+        scene.into(),
         sparse.into(),
         meta.into(),
-        out.join("showcase.mp4").into(),
+        out.join(format!("{name}.mp4")).into(),
     ];
+    if let Some(frame) = frame {
+        args.extend([OsString::from("--frame"), frame.into()]);
+    }
     let opts = [
         ("--path", path_name(video.path).to_owned()),
         ("--seconds", video.seconds.to_string()),
@@ -65,7 +79,7 @@ pub fn render_args(
     }
     args.extend([
         OsString::from("--share"),
-        out.join("showcase-share.mp4").into(),
+        out.join(format!("{name}-share.mp4")).into(),
     ]);
     args
 }
@@ -83,30 +97,88 @@ fn thousands(n: f64) -> String {
     out
 }
 
-/// The sidebar (`render_video`'s meta.json) from the sfm and splat metrics.
-/// Rows with a gate carry its pass/fail state.
-pub fn meta(config: &Config, sfm_metrics: &Metrics, splat_metrics: &Metrics) -> Value {
+/// The SfM sidebar section. Rows with a gate carry its pass/fail state.
+fn sfm_section(config: &Config, sfm_metrics: &Metrics) -> Value {
     let g = &config.gates;
     let m = |k: &str| sfm_metrics.get(k).copied().unwrap_or(f64::NAN);
     let ratio = m(sfm::REGISTERED_RATIO);
     let reproj = m(sfm::MEAN_REPROJ_ERROR_PX);
     let track = m(sfm::MEAN_TRACK_LENGTH);
-    let gaussians = splat_metrics.get("gaussians").copied().unwrap_or(f64::NAN);
+    json!([
+        "SfM",
+        [
+            [
+                "Registered",
+                format!("{} / {}", m(sfm::REGISTERED_IMAGES), m(sfm::INPUT_IMAGES)),
+                ratio >= g.min_registered_ratio
+            ],
+            [
+                "Reprojection",
+                format!("{reproj:.2} px"),
+                reproj <= g.max_reproj_error_px
+            ],
+            [
+                "Track length",
+                format!("{track:.2}"),
+                track >= g.min_track_length
+            ],
+            ["Points", thousands(m(sfm::POINTS))],
+        ]
+    ])
+}
+
+/// The splat video's sidebar (`render_video`'s meta.json) from the sfm and
+/// post metrics.
+pub fn meta(config: &Config, sfm_metrics: &Metrics, post_metrics: &Metrics) -> Value {
+    let p = |k: &str| post_metrics.get(k).copied().unwrap_or(f64::NAN);
+    let removed = p(post::GAUSSIANS_IN) - p(post::GAUSSIANS);
     json!({
         "title": config.dataset.name,
-        "subtitle": "shoreline-recon showcase",
+        "subtitle": "shoreline-recon · Gaussian splat",
         "kind": "masked",
         "sections": [
-            ["SfM", [
-                ["Registered", format!("{} / {}", m(sfm::REGISTERED_IMAGES), m(sfm::INPUT_IMAGES)), ratio >= g.min_registered_ratio],
-                ["Reprojection", format!("{reproj:.2} px"), reproj <= g.max_reproj_error_px],
-                ["Track length", format!("{track:.2}"), track >= g.min_track_length],
-                ["Points", thousands(m(sfm::POINTS))],
-            ]],
+            sfm_section(config, sfm_metrics),
             ["Splat", [
-                ["Gaussians", thousands(gaussians)],
+                ["Gaussians", thousands(p(post::GAUSSIANS))],
+                ["Floaters removed", thousands(removed)],
                 ["Steps", thousands(f64::from(config.splat.steps))],
             ]],
+        ],
+    })
+}
+
+/// The mesh video's sidebar from the sfm and post metrics.
+pub fn mesh_meta(config: &Config, sfm_metrics: &Metrics, post_metrics: &Metrics) -> Value {
+    let p = |k: &str| post_metrics.get(k).copied().unwrap_or(f64::NAN);
+    let mut water = vec![json!([
+        "Below water",
+        thousands(p(post::VERTICES_BELOW_WATER)),
+        p(post::VERTICES_BELOW_WATER) == 0.0
+    ])];
+    if post_metrics.contains_key(post::PLANE_INLIERS) {
+        water.insert(
+            0,
+            json!([
+                "Waterline fit",
+                format!(
+                    "{} / {}",
+                    thousands(p(post::PLANE_INLIERS)),
+                    thousands(p(post::WATERLINE_POINTS))
+                )
+            ]),
+        );
+    }
+    json!({
+        "title": config.dataset.name,
+        "subtitle": "shoreline-recon · textured mesh",
+        "kind": "masked",
+        "sections": [
+            sfm_section(config, sfm_metrics),
+            ["Mesh", [
+                ["Faces", thousands(p(post::MESH_FACES))],
+                ["From", thousands(p(post::MESH_FACES_IN))],
+            ]],
+            ["Water plane", water],
         ],
     })
 }
@@ -128,7 +200,7 @@ impl Stage for VideoStage {
     }
 
     fn deps(&self) -> &[&'static str] {
-        &[SFM, SPLAT]
+        &[SFM, SPLAT, POST]
     }
 
     fn config(&self, config: &Config) -> serde_json::Value {
@@ -147,34 +219,68 @@ impl Stage for VideoStage {
 
     fn run(&self, ctx: &RunContext, inputs: &Inputs, out_dir: &Path) -> Result<StageRun> {
         let splat = &inputs[SPLAT].dir;
+        let post_dir = &inputs[POST].dir;
         let sparse = splat.join("dataset/sparse/0");
-        let meta_path = out_dir.join("meta.json");
-        let meta = meta(
-            &ctx.config,
-            &manifest_metrics(SFM, &inputs[SFM])?,
-            &manifest_metrics(SPLAT, &inputs[SPLAT])?,
-        );
-        let text = serde_json::to_string_pretty(&meta).expect("meta serialises");
-        std::fs::write(&meta_path, text).map_err(io_error(&meta_path))?;
+        let sfm_metrics = manifest_metrics(SFM, &inputs[SFM])?;
+        let post_metrics = manifest_metrics(POST, &inputs[POST])?;
+        let write_meta = |name: &str, value: &Value| -> Result<std::path::PathBuf> {
+            let path = out_dir.join(name);
+            let text = serde_json::to_string_pretty(value).expect("meta serialises");
+            std::fs::write(&path, text).map_err(io_error(&path))?;
+            Ok(path)
+        };
+        let splat_meta = write_meta("meta.json", &meta(&ctx.config, &sfm_metrics, &post_metrics))?;
+        let mesh_meta = write_meta(
+            "mesh-meta.json",
+            &mesh_meta(&ctx.config, &sfm_metrics, &post_metrics),
+        )?;
 
-        let args = render_args(&ctx.config.video, splat, &sparse, &meta_path, out_dir);
-        let inv = Invocation::new(args).mount(splat).mount(out_dir);
-        let record = ctx
-            .tools
-            .get(RENDER)?
-            .run(&inv, &out_dir.join("logs/render_video.log"))?;
+        let render = ctx.tools.get(RENDER)?;
+        let video = &ctx.config.video;
+        let runs = [
+            (
+                "showcase",
+                post_dir.join("splat.ply"),
+                None,
+                splat_meta,
+                "render_splat",
+            ),
+            (
+                "mesh",
+                post_dir.join("model.glb"),
+                Some(post_dir.join("water_plane.json")),
+                mesh_meta,
+                "render_mesh",
+            ),
+        ];
+        let mut tools = Vec::new();
+        for (name, scene, frame, meta_path, log) in runs {
+            let args = render_args(
+                video,
+                &scene,
+                frame.as_deref(),
+                &sparse,
+                &meta_path,
+                out_dir,
+                name,
+            );
+            let inv = Invocation::new(args)
+                .mount(splat)
+                .mount(post_dir)
+                .mount(out_dir);
+            tools.push(render.run(&inv, &out_dir.join(format!("logs/{log}.log")))?);
+        }
 
         let metrics = [
             (VIDEO_MIB, mib(&out_dir.join("showcase.mp4"))?),
             (SHARE_MIB, mib(&out_dir.join("showcase-share.mp4"))?),
+            (MESH_MIB, mib(&out_dir.join("mesh.mp4"))?),
+            (MESH_SHARE_MIB, mib(&out_dir.join("mesh-share.mp4"))?),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_owned(), v))
         .collect();
-        Ok(StageRun {
-            tools: vec![record],
-            metrics,
-        })
+        Ok(StageRun { tools, metrics })
     }
 }
 
@@ -205,15 +311,17 @@ mod tests {
         let config = repo_config();
         let args = render_args(
             &config.video,
-            Path::new("/s"),
+            Path::new("/p/splat.ply"),
+            None,
             Path::new("/s/dataset/sparse/0"),
             Path::new("/o/meta.json"),
             Path::new("/o"),
+            "showcase",
         );
         assert_eq!(
             strings(&args),
             [
-                "/s/splat.ply",
+                "/p/splat.ply",
                 "/s/dataset/sparse/0",
                 "/o/meta.json",
                 "/o/showcase.mp4",
@@ -231,6 +339,27 @@ mod tests {
                 "/o/showcase-share.mp4",
             ]
         );
+        let mesh = strings(&render_args(
+            &config.video,
+            Path::new("/p/model.glb"),
+            Some(Path::new("/p/water_plane.json")),
+            Path::new("/s/dataset/sparse/0"),
+            Path::new("/o/mesh-meta.json"),
+            Path::new("/o"),
+            "mesh",
+        ));
+        assert_eq!(
+            mesh[..6],
+            [
+                "/p/model.glb",
+                "/s/dataset/sparse/0",
+                "/o/mesh-meta.json",
+                "/o/mesh.mp4",
+                "--frame",
+                "/p/water_plane.json"
+            ]
+        );
+        assert_eq!(mesh.last().unwrap(), "/o/mesh-share.mp4");
     }
 
     #[test]
@@ -247,14 +376,37 @@ mod tests {
         .into_iter()
         .map(|(k, v)| (k.to_owned(), v))
         .collect();
-        let splat_metrics: Metrics = [("gaussians".to_owned(), 595317.0)].into();
-        let meta = meta(&config, &sfm_metrics, &splat_metrics);
+        let post_metrics: Metrics = [
+            (post::GAUSSIANS_IN, 595136.0),
+            (post::GAUSSIANS, 579344.0),
+            (post::MESH_FACES, 500000.0),
+            (post::MESH_FACES_IN, 1959305.0),
+            (post::VERTICES_BELOW_WATER, 0.0),
+            (post::PLANE_INLIERS, 803.0),
+            (post::WATERLINE_POINTS, 2112.0),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_owned(), v))
+        .collect();
+        let meta = meta(&config, &sfm_metrics, &post_metrics);
         assert_eq!(meta["title"], "reposalmi-laajasalo");
         let sfm_rows = &meta["sections"][0][1];
         assert_eq!(sfm_rows[0], json!(["Registered", "121 / 121", true]));
         assert_eq!(sfm_rows[1], json!(["Reprojection", "1.50 px", false]));
         assert_eq!(sfm_rows[3], json!(["Points", "68,582"]));
-        assert_eq!(meta["sections"][1][1][0], json!(["Gaussians", "595,317"]));
+        assert_eq!(meta["sections"][1][1][0], json!(["Gaussians", "579,344"]));
+        assert_eq!(
+            meta["sections"][1][1][1],
+            json!(["Floaters removed", "15,792"])
+        );
+
+        let mesh = mesh_meta(&config, &sfm_metrics, &post_metrics);
+        assert_eq!(mesh["sections"][1][1][0], json!(["Faces", "500,000"]));
+        assert_eq!(
+            mesh["sections"][2][1][0],
+            json!(["Waterline fit", "803 / 2,112"])
+        );
+        assert_eq!(mesh["sections"][2][1][1], json!(["Below water", "0", true]));
     }
 
     #[test]

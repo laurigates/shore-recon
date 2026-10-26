@@ -11,8 +11,8 @@ pub const PIPELINE: &[(&str, &[&str])] = &[
     ("sfm", &["frames", "masks"]),
     ("dense", &["frames", "masks", "sfm"]),
     ("splat", &["frames", "masks", "sfm"]),
-    ("video", &["sfm", "splat"]),
     ("post", &["masks", "sfm", "dense", "splat"]),
+    ("video", &["sfm", "splat", "post"]),
     ("export", &["post"]),
 ];
 
@@ -83,7 +83,7 @@ mod tests {
         assert_eq!(
             topo_order(PIPELINE).unwrap(),
             [
-                "frames", "masks", "sfm", "dense", "splat", "video", "post", "export"
+                "frames", "masks", "sfm", "dense", "splat", "post", "video", "export"
             ]
         );
     }
