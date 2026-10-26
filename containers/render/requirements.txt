@@ -12,6 +12,8 @@ gsplat==1.5.3
 numpy==2.5.4
 pillow==13.0.0
 plyfile==1.1.5
+# Mesh rendering over headless EGL (ADR-0012): moderngl pulls in glcontext.
+moderngl==5.13.0
 # gsplat imports packaging at module load without declaring it.
 packaging==26.3
 # gsplat's build: setuptools for setup.py, ninja for torch's extension builder.
