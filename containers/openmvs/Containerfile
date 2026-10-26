@@ -4,7 +4,10 @@
 # Built and pushed by .github/workflows/containers.yml.
 FROM nvidia/cuda:12.8.1-devel-ubuntu24.04@sha256:520292dbb4f755fd360766059e62956e9379485d9e073bbd2f6e3c20c270ed66 AS build
 
-ARG OPENMVS_REF=v2.4.0
+# v2.4.0 plus upstream's fix for black textures (cdcseacave/openMVS#1251): seam leveling sampled
+# images through the wrong pixel type, so TextureMesh painted every face black. The commit's
+# parent has the same tree as the v2.4.0 tag; the fix is its only change.
+ARG OPENMVS_COMMIT=eeedab7acceae48a92ddf44eaf4eb6ffe2fef14d
 ARG VCG_COMMIT=658ba36d0a5666650da6e066b4794efc5a463407
 ARG EIGEN_REF=3.4.0
 ARG CGAL_REF=v6.0.1
@@ -41,7 +44,9 @@ RUN git clone --depth 1 --branch "${EIGEN_REF}" https://gitlab.com/libeigen/eige
     && cmake -S nanoflann -B nanoflann/build -DNANOFLANN_BUILD_EXAMPLES=OFF -DNANOFLANN_BUILD_TESTS=OFF \
     && cmake --install nanoflann/build \
     && git clone https://github.com/cdcseacave/VCG.git vcglib && git -C vcglib checkout --quiet "${VCG_COMMIT}" \
-    && git clone --depth 1 --branch "${OPENMVS_REF}" https://github.com/cdcseacave/openMVS.git
+    && git init --quiet openMVS \
+    && git -C openMVS fetch --quiet --depth 1 https://github.com/cdcseacave/openMVS.git "${OPENMVS_COMMIT}" \
+    && git -C openMVS checkout --quiet FETCH_HEAD
 
 RUN cmake -S openMVS -B openMVS/build -DCMAKE_BUILD_TYPE=Release -DVCG_ROOT=/src/vcglib \
         -DOpenMVS_USE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH}" \
