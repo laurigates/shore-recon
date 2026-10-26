@@ -8,11 +8,13 @@ ARG OPENMVS_REF=v2.4.0
 ARG VCG_COMMIT=658ba36d0a5666650da6e066b4794efc5a463407
 ARG EIGEN_REF=3.4.0
 ARG CGAL_REF=v6.0.1
+# The last nanoflann release before OpenMVS v2.4.0 (2026-01-20).
+ARG NANOFLANN_REF=v1.9.0
 ARG CUDA_ARCH=89
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential ca-certificates cmake git \
+        build-essential ca-certificates cmake git pkg-config \
         libboost-iostreams-dev libboost-program-options-dev libboost-serialization-dev \
         libboost-system-dev libboost-thread-dev libgmp-dev libmpfr-dev \
         libjpeg-dev libopencv-dev libpng-dev libtiff-dev zlib1g-dev \
@@ -23,6 +25,9 @@ RUN git clone --depth 1 --branch "${EIGEN_REF}" https://gitlab.com/libeigen/eige
     && cmake -S eigen -B eigen/build && cmake --install eigen/build \
     && git clone --depth 1 --branch "${CGAL_REF}" https://github.com/CGAL/cgal.git \
     && cmake -S cgal -B cgal/build -DCMAKE_BUILD_TYPE=Release && cmake --install cgal/build \
+    && git clone --depth 1 --branch "${NANOFLANN_REF}" https://github.com/jlblancoc/nanoflann.git \
+    && cmake -S nanoflann -B nanoflann/build -DNANOFLANN_BUILD_EXAMPLES=OFF -DNANOFLANN_BUILD_TESTS=OFF \
+    && cmake --install nanoflann/build \
     && git clone https://github.com/cdcseacave/VCG.git vcglib && git -C vcglib checkout --quiet "${VCG_COMMIT}" \
     && git clone --depth 1 --branch "${OPENMVS_REF}" https://github.com/cdcseacave/openMVS.git
 

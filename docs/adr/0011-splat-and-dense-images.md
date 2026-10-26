@@ -35,7 +35,7 @@ OpenMVS.
    with `libvulkan1`, `libx11-6` and `libxext6`. Mesa's Vulkan drivers are left out, so a
    missing GPU fails the run instead of training on the CPU.
 2. `containers/openmvs` builds OpenMVS v2.4.0 with CUDA for sm_89 (the RTX 4090), with Eigen
-   3.4.0, CGAL v6.0.1 and VCG pinned to a commit. The runtime stage installs only the packages
+   3.4.0, CGAL v6.0.1, nanoflann v1.9.0 and VCG pinned to a commit. The runtime stage installs only the packages
    that own the binaries' shared libraries.
 3. Both images are `linux/amd64`, built in CI and pinned by digest in the host tools file.
 4. Dense masks use OpenMVS's native support (`--mask-path`, `--ignore-mask-label 0`, black
