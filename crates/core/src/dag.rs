@@ -11,9 +11,12 @@ pub const PIPELINE: &[(&str, &[&str])] = &[
     ("sfm", &["frames", "masks"]),
     ("dense", &["frames", "masks", "sfm"]),
     ("splat", &["frames", "masks", "sfm"]),
-    ("video", &["sfm", "splat"]),
     ("post", &["masks", "sfm", "dense", "splat"]),
-    ("export", &["post"]),
+    ("video", &["sfm", "splat", "post"]),
+    (
+        "export",
+        &["frames", "masks", "sfm", "dense", "splat", "post", "video"],
+    ),
 ];
 
 /// Topologically sort stages. Ties are broken by declaration order, so the
@@ -83,7 +86,7 @@ mod tests {
         assert_eq!(
             topo_order(PIPELINE).unwrap(),
             [
-                "frames", "masks", "sfm", "dense", "splat", "video", "post", "export"
+                "frames", "masks", "sfm", "dense", "splat", "post", "video", "export"
             ]
         );
     }

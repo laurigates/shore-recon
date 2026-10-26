@@ -1,6 +1,6 @@
 # Showcase-video renderer for the video stage (ADR-0008, #29): render_video, a port of the M0
-# spike's render_orbit.py, with gsplat 1.5.3 on torch 2.9.1 (CUDA 12.8) and a static ffmpeg with
-# SVT-AV1. gsplat's CUDA extension is compiled here for sm_89 (RTX 4090), so nothing JIT-compiles
+# spike's render_orbit.py, with gsplat 1.5.3 on torch 2.9.1 (CUDA 12.8) for splats, moderngl over
+# headless EGL for meshes (ADR-0012), and a static ffmpeg with SVT-AV1. gsplat's CUDA extension is compiled here for sm_89 (RTX 4090), so nothing JIT-compiles
 # at run time and the image needs no writable cache under Apptainer. Invoked as `render_video ...`
 # under `apptainer exec --nv`; the entrypoint is not used.
 # Built and pushed by .github/workflows/containers.yml.
@@ -47,7 +47,7 @@ RUN mkdir /opt/fonts && cp /usr/share/fonts/truetype/noto/NotoSans-Regular.ttf \
 FROM ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac
 
 LABEL org.opencontainers.image.source="https://github.com/laurigates/data-processing" \
-      org.opencontainers.image.description="shoreline-recon showcase video renderer: gsplat 1.5.3 (CUDA sm_89), SVT-AV1"
+      org.opencontainers.image.description="shoreline-recon showcase video renderer: gsplat 1.5.3 (CUDA sm_89), moderngl (EGL), SVT-AV1"
 
 # libgomp1: gsplat's extension is built with -fopenmp against the system libgomp.
 RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 python3.12 \
@@ -64,9 +64,12 @@ ENV PATH=/opt/venv/bin:$PATH \
     PYTHONUNBUFFERED=1
 
 # Fails the build if the compiled extension does not load (torch, the CUDA user-space libraries
-# and libgomp must resolve; the driver's libcuda comes from the host via --nv), if ffmpeg lacks
-# SVT-AV1, or if the CLI does not start. Rendering needs a GPU, which CI does not have.
+# and libgomp must resolve; the driver's libcuda comes from the host via --nv), if moderngl does
+# not import, if ffmpeg lacks SVT-AV1, or if the CLI does not start. Rendering needs a GPU, which
+# CI does not have: the GL and EGL libraries (glvnd's libOpenGL.so.0 and libEGL.so.1, and the
+# NVIDIA vendor libraries) come from the host via --nv as well.
 RUN python -c "import torch, gsplat.csrc; from gsplat import rasterization; print('gsplat', gsplat.__version__, 'torch', torch.__version__)" \
+    && python -c "import moderngl; print('moderngl', moderngl.__version__)" \
     && ffmpeg -hide_banner -encoders | grep -q libsvtav1 \
     && ffprobe -version | head -n 1 \
     && render_video --help

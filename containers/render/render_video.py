@@ -1,15 +1,21 @@
 #!/usr/bin/env python3
-"""Render a seamless looping showcase video of a Gaussian splat, with a stats sidebar, as AV1.
+"""Render a seamless looping showcase video of a Gaussian splat or a mesh, with a stats sidebar, as AV1.
 
 Ported from the M0 spike's spike/m0/remote/render_orbit.py (ADR-0002 decision 6, ADR-0008, #29).
 
-    render_video <splat.ply> <sparse_dir> <meta.json> <out.mp4>
+    render_video <scene> <sparse_dir> <meta.json> <out.mp4>
+                 [--frame <water_plane.json>]
                  [--path arc|drone] [--seconds S] [--fps N] [--size WxH] [--sidebar PX]
                  [--fov-scale F] [--pullback F] [--share <share.mp4>] [--share-max-mib 30]
 
 Inputs
-  splat.ply   INRIA-layout Gaussian splat (Brush export): x y z, f_dc_*, f_rest_*, opacity,
-              scale_*, rot_*.
+  scene       A .ply: INRIA-layout Gaussian splat (Brush export): x y z, f_dc_*, f_rest_*,
+              opacity, scale_*, rot_*; rendered with gsplat (CUDA).
+              A .glb: the post stage's model.glb (ADR-0012): node 0 a textured triangle mesh
+              (POSITION, TEXCOORD_0, embedded image), optional node 1 the water surface (POSITION),
+              in the model frame; rendered with OpenGL over headless EGL. Needs --frame.
+  --frame     The post stage's water_plane.json; its model_from_reconstruction matrix moves the
+              cameras into the model frame of a .glb scene.
   sparse_dir  COLMAP binary model (cameras.bin, images.bin) of undistorted PINHOLE or
               SIMPLE_PINHOLE cameras: the splat stage's training cameras. The first camera's
               intrinsics set the focal length.
@@ -46,10 +52,11 @@ def die(msg):
 
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(prog="render_video", description=__doc__.split("\n\n")[0])
-    ap.add_argument("ply", type=Path, help="splat PLY")
+    ap.add_argument("ply", type=Path, help="splat .ply or mesh .glb")
     ap.add_argument("model", type=Path, help="COLMAP binary model directory (sparse/0)")
     ap.add_argument("meta", type=Path, help="sidebar content (JSON, see module docstring)")
     ap.add_argument("out", type=Path, help="output .mp4")
+    ap.add_argument("--frame", type=Path, help="water_plane.json (required for a .glb scene)")
     ap.add_argument("--path", choices=["arc", "drone"], default="arc")
     ap.add_argument("--seconds", type=float, default=16)
     ap.add_argument("--fps", type=int, default=30)
@@ -74,6 +81,9 @@ def parse_args(argv=None):
     a.frames = round(a.seconds * a.fps)
     if a.frames < 2:
         ap.error("the video needs at least two frames")
+    a.mesh = a.ply.suffix.lower() == ".glb"
+    if a.mesh != (a.frame is not None):
+        ap.error("--frame goes with a .glb scene, and a .glb scene needs --frame")
     return a
 
 
@@ -326,6 +336,26 @@ def load_splat(path, dev):
         colors=t(sh), sh_degree=math.isqrt(k) - 1, count=len(v))
 
 
+def splat_renderer(path, f, w, h):
+    """A function from an OpenCV view matrix to an RGB frame, rendered with gsplat."""
+    import torch
+
+    dev = require_cuda()
+    torch.set_grad_enabled(False)
+    from gsplat import rasterization
+
+    sp = load_splat(path, dev)
+    K = torch.tensor([[[f, 0, w / 2], [0, f, h / 2], [0, 0, 1]]], dtype=torch.float32, device=dev)
+
+    def render(V):
+        img, _, _ = rasterization(sp["means"], sp["quats"], sp["scales"], sp["opacities"], sp["colors"],
+                                  torch.tensor(V, dtype=torch.float32, device=dev)[None], K, w, h,
+                                  sh_degree=sp["sh_degree"])  # default background is black
+        return (img[0].clamp(0, 1).cpu().numpy() * 255).astype(np.uint8)
+
+    return render, f"{sp['count']} splats"
+
+
 def require_cuda():
     """Fail unless a CUDA device and gsplat's compiled extension are both usable."""
     import torch
@@ -337,6 +367,183 @@ def require_cuda():
     if _backend._C is None:
         die("gsplat's CUDA extension is not available")
     return "cuda"
+
+
+# ---------- mesh (model.glb) + OpenGL ----------
+GL_COMPONENTS = {5126: np.float32, 5125: np.uint32, 5123: np.uint16}
+TYPE_SIZE = {"SCALAR": 1, "VEC2": 2, "VEC3": 3}
+
+
+def load_glb(path):
+    """[(mesh name, positions, uvs or None, indices)] per node, plus the embedded image bytes."""
+    data = path.read_bytes()
+    magic, version, _ = struct.unpack("<4sII", data[:12])
+    if magic != b"glTF" or version != 2:
+        die(f"{path}: not a glTF 2 binary")
+    jlen, jtype = struct.unpack("<I4s", data[12:20])
+    if jtype != b"JSON":
+        die(f"{path}: first chunk is not JSON")
+    doc = json.loads(data[20:20 + jlen])
+    blen, btype = struct.unpack("<I4s", data[20 + jlen:28 + jlen])
+    if btype != b"BIN\0":
+        die(f"{path}: second chunk is not BIN")
+    blob = data[28 + jlen:28 + jlen + blen]
+
+    def view(i):
+        v = doc["bufferViews"][i]
+        off = v.get("byteOffset", 0)
+        return blob[off:off + v["byteLength"]]
+
+    def accessor(i):
+        a = doc["accessors"][i]
+        if "byteStride" in doc["bufferViews"][a["bufferView"]]:
+            die(f"{path}: interleaved buffer views are not supported")
+        n = TYPE_SIZE[a["type"]]
+        raw = view(a["bufferView"])[a.get("byteOffset", 0):]
+        arr = np.frombuffer(raw, dtype=GL_COMPONENTS[a["componentType"]], count=a["count"] * n)
+        return arr.reshape(a["count"], n) if n > 1 else arr
+
+    nodes = []
+    for node in doc["nodes"]:
+        mesh = doc["meshes"][node["mesh"]]
+        prim = mesh["primitives"][0]
+        if prim.get("mode", 4) != 4:
+            die(f"{path}: mesh {mesh.get('name')} is not a triangle list")
+        attrs = prim["attributes"]
+        uvs = accessor(attrs["TEXCOORD_0"]) if "TEXCOORD_0" in attrs else None
+        nodes.append((mesh.get("name", ""), accessor(attrs["POSITION"]), uvs,
+                      accessor(prim["indices"]).astype(np.uint32)))
+    if not nodes or nodes[0][2] is None:
+        die(f"{path}: node 0 must be a textured mesh")
+    image = doc["images"][0]
+    if "bufferView" not in image:
+        die(f"{path}: the texture must be embedded")
+    return nodes, view(image["bufferView"])
+
+
+def load_frame(path):
+    try:
+        T = np.array(json.loads(path.read_text())["model_from_reconstruction"], dtype=np.float64)
+    except (OSError, KeyError, ValueError) as e:
+        die(f"cannot read model_from_reconstruction from {path}: {e}")
+    if T.shape != (4, 4):
+        die(f"{path}: model_from_reconstruction must be 4x4")
+    return T
+
+
+MESH_VS = """#version 330
+uniform mat4 mvp;
+in vec3 position;
+in vec2 uv;
+out vec2 v_uv;
+void main() { v_uv = uv; gl_Position = mvp * vec4(position, 1.0); }
+"""
+MESH_FS = """#version 330
+uniform sampler2D tex;
+in vec2 v_uv;
+out vec4 color;
+void main() { color = vec4(texture(tex, v_uv).rgb, 1.0); }
+"""
+# Water: a deep teal that lightens towards grazing angles (Schlick Fresnel), alpha-blended, fading
+# out between fade.x and fade.y from the mesh's centre so the surface has no visible edge.
+WATER_VS = """#version 330
+uniform mat4 mvp;
+in vec3 position;
+out vec3 v_world;
+void main() { v_world = position; gl_Position = mvp * vec4(position, 1.0); }
+"""
+WATER_FS = """#version 330
+uniform vec3 eye;
+uniform vec2 centre;
+uniform vec2 fade;
+in vec3 v_world;
+out vec4 color;
+void main() {
+    vec3 v = normalize(eye - v_world);
+    float fresnel = 0.02 + 0.98 * pow(1.0 - abs(v.y), 5.0);
+    vec3 deep = vec3(0.04, 0.13, 0.16), sky = vec3(0.55, 0.62, 0.68);
+    float edge = 1.0 - smoothstep(fade.x, fade.y, distance(v_world.xz, centre));
+    color = vec4(mix(deep, sky, fresnel), mix(0.78, 0.95, fresnel) * edge);
+}
+"""
+
+
+def gl_projection(f, w, h, near, far):
+    """OpenGL clip-from-camera for a centred pinhole of focal f px; the camera looks down -z."""
+    return np.array([[2 * f / w, 0, 0, 0],
+                     [0, 2 * f / h, 0, 0],
+                     [0, 0, -(far + near) / (far - near), -2 * far * near / (far - near)],
+                     [0, 0, -1, 0]])
+
+
+CV_TO_GL = np.diag([1.0, -1.0, -1.0, 1.0])  # OpenCV camera (x right, y down, z forward) -> OpenGL
+
+
+def mesh_renderer(path, T, f, w, h, samples=8):
+    """A function from an OpenCV view matrix (world = reconstruction frame) to an RGB frame."""
+    import moderngl
+    from PIL import Image
+    import io
+
+    nodes, image = load_glb(path)
+    # Apptainer's --nv binds glvnd's libOpenGL and libEGL; libGL would need X11 libraries.
+    ctx = moderngl.create_standalone_context(backend="egl", libgl="libOpenGL.so.0", libegl="libEGL.so.1")
+    tex_img = Image.open(io.BytesIO(image)).convert("RGB")
+    tex = ctx.texture(tex_img.size, 3, tex_img.tobytes())
+    tex.build_mipmaps()
+    tex.filter = (moderngl.LINEAR_MIPMAP_LINEAR, moderngl.LINEAR)
+    tex.anisotropy = 16.0
+
+    mesh_prog = ctx.program(vertex_shader=MESH_VS, fragment_shader=MESH_FS)
+    water_prog = ctx.program(vertex_shader=WATER_VS, fragment_shader=WATER_FS)
+    _, pos, uvs, idx = nodes[0]
+    mesh_vao = ctx.vertex_array(
+        mesh_prog, [(ctx.buffer(pos.astype("f4").tobytes()), "3f", "position"),
+                    (ctx.buffer(uvs.astype("f4").tobytes()), "2f", "uv")],
+        index_buffer=ctx.buffer(idx.tobytes()), index_element_size=4)
+    water_vao = None
+    if len(nodes) > 1:
+        _, wpos, _, widx = nodes[1]
+        water_vao = ctx.vertex_array(water_prog, [(ctx.buffer(wpos.astype("f4").tobytes()), "3f", "position")],
+                                     index_buffer=ctx.buffer(widx.tobytes()), index_element_size=4)
+
+    diag = float(np.linalg.norm(pos.max(0) - pos.min(0)))
+    lo, hi = pos.min(0), pos.max(0)
+    centre = (float((lo[0] + hi[0]) / 2), float((lo[2] + hi[2]) / 2))
+    radius = float(np.hypot(hi[0] - lo[0], hi[2] - lo[2]) / 2)
+    P = gl_projection(f, w, h, 0.002 * diag, 20 * diag)
+    T_inv = np.linalg.inv(T)
+    msaa = ctx.framebuffer(color_attachments=[ctx.renderbuffer((w, h), 4, samples=samples)],
+                           depth_attachment=ctx.depth_renderbuffer((w, h), samples=samples))
+    out = ctx.framebuffer(color_attachments=[ctx.renderbuffer((w, h), 4)])
+
+    def render(V):
+        Vm = V @ T_inv  # camera from model
+        mvp = (P @ CV_TO_GL @ Vm).astype("f4")
+        eye = (np.linalg.inv(Vm) @ [0, 0, 0, 1])[:3]
+        msaa.use()
+        ctx.clear(10 / 255, 12 / 255, 16 / 255, 1.0)
+        ctx.enable(moderngl.DEPTH_TEST)
+        ctx.disable(moderngl.CULL_FACE)
+        ctx.disable(moderngl.BLEND)
+        tex.use(0)
+        mesh_prog["tex"].value = 0
+        mesh_prog["mvp"].write(mvp.T.tobytes())  # GLSL matrices are column-major
+        mesh_vao.render()
+        if water_vao is not None:
+            ctx.enable(moderngl.BLEND)
+            ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
+            water_prog["mvp"].write(mvp.T.tobytes())
+            water_prog["eye"].value = tuple(float(x) for x in eye)
+            water_prog["centre"].value = centre
+            water_prog["fade"].value = (1.2 * radius, 2.5 * radius)
+            water_vao.render()
+        ctx.copy_framebuffer(out, msaa)
+        rgb = np.frombuffer(out.read(components=3), dtype=np.uint8).reshape(h, w, 3)
+        return rgb[::-1]  # OpenGL rows run bottom-up
+
+    count = sum(len(n[3]) // 3 for n in nodes)
+    return render, f"{count} faces"
 
 
 # ---------- encoding ----------
@@ -393,14 +600,7 @@ def main(argv=None):
         if not Path(p).is_file():
             die(f"font {p} not found (set SHORELINE_FONT_DIR)")
 
-    import torch
     from PIL import Image
-
-    dev = require_cuda()
-    torch.set_grad_enabled(False)
-    from gsplat import rasterization
-
-    sp = load_splat(a.ply, dev)
 
     if a.path == "arc":
         views, label = arc_path(poses, a.frames)
@@ -412,7 +612,10 @@ def main(argv=None):
     # view height; fov_scale < 1 widens the field of view (zooms out).
     VW = a.W - a.sidebar
     f = fy * a.H / ch * a.fov_scale
-    K = torch.tensor([[[f, 0, VW / 2], [0, f, a.H / 2], [0, 0, 1]]], dtype=torch.float32, device=dev)
+    if a.mesh:
+        render, count = mesh_renderer(a.ply, load_frame(a.frame), f, VW, a.H)
+    else:
+        render, count = splat_renderer(a.ply, f, VW, a.H)
     side = Image.new("RGB", (a.sidebar, a.H), (10, 12, 16))
     if a.sidebar:
         ov = panel(meta, s=a.H / 1080)
@@ -423,15 +626,11 @@ def main(argv=None):
 
     def frames():
         for V in views:
-            img, _, _ = rasterization(sp["means"], sp["quats"], sp["scales"], sp["opacities"], sp["colors"],
-                                      torch.tensor(V, dtype=torch.float32, device=dev)[None], K, VW, a.H,
-                                      sh_degree=sp["sh_degree"])  # default background is black
-            view = (img[0].clamp(0, 1).cpu().numpy() * 255).astype(np.uint8)
-            yield np.concatenate([side, view], axis=1)
+            yield np.concatenate([side, render(V)], axis=1)
 
     a.out.parent.mkdir(parents=True, exist_ok=True)
     encode(frames(), a, a.out)
-    print(f"render_video: {a.out} {a.frames} frames, {label}, {sp['count']} splats, "
+    print(f"render_video: {a.out} {a.frames} frames, {label}, {count}, "
           f"{a.out.stat().st_size / 1048576:.1f} MiB")
     if a.share:
         a.share.parent.mkdir(parents=True, exist_ok=True)
