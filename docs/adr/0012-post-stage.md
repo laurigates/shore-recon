@@ -54,7 +54,7 @@ one.
    seams; if seams block the target, a second pass collapses across them, weighted by UV error,
    and the `decimation_across_seams` metric records it. The texture is downscaled to
    `post.texture_max_size` (4096) and embedded as JPEG (quality 90). The water is a separate node:
-   a rectangle around the mesh with a 50 % margin and an alpha-blended material.
+   a rectangle around the mesh with a margin of twice its extent and an alpha-blended material.
 4. **Splat.** A Gaussian is removed when its centre is below the plane, when no training view sees
    it, or when more than `post.floater_max_water` (0.5) of the views that see it see it on an
    ignored pixel along a ray that points down. That last condition separates water from sky, so

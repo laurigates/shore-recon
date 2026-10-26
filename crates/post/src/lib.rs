@@ -52,7 +52,7 @@ pub const MAX_CAMERA_TILT_DEG: f64 = 5.0;
 /// JPEG quality of the embedded texture.
 const JPEG_QUALITY: u8 = 90;
 /// The water surface extends this far beyond the mesh, relative to its extent.
-const WATER_MARGIN: f32 = 0.5;
+const WATER_MARGIN: f32 = 2.0;
 const WATER_COLOR: [f32; 4] = [0.11, 0.26, 0.32, 0.82];
 
 /// Metric names.
@@ -370,10 +370,10 @@ mod tests {
         assert_eq!(
             o,
             [
-                [-1.0, 0.0, 2.0],
-                [3.0, 0.0, 2.0],
-                [3.0, 0.0, -1.0],
-                [-1.0, 0.0, -1.0]
+                [-4.0, 0.0, 5.0],
+                [6.0, 0.0, 5.0],
+                [6.0, 0.0, -4.0],
+                [-4.0, 0.0, -4.0]
             ]
         );
         // Counter-clockwise seen from +Y: the fan's first triangle faces up.
