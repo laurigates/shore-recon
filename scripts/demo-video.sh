@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Assemble the v1 demo video from the pipeline's showcase videos: a title card, then each
-# dataset's latest `work/<dataset>/video/<fingerprint>/showcase.mp4`, joined with crossfades,
-# with one MP4 chapter per part. Also writes a share copy under the attachment limit.
+# Assemble the v1 demo video from the pipeline's deliverables: a title card, then for each
+# dataset the splat (`showcase.mp4`) and the mesh with its water (`mesh.mp4`) from its latest
+# `work/<dataset>/export/<fingerprint>/`, joined with crossfades, with one MP4 chapter per part.
+# Also writes a share copy under the attachment limit.
 # Usage: demo-video.sh <out.mp4> <dataset>...
 # Needs ffmpeg with libsvtav1 and ImageMagick (`magick`) for the title card.
 set -euo pipefail
@@ -16,23 +17,29 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 inputs=() labels=() durations=()
+side_names=()
 for ds in "$@"; do
     # shellcheck disable=SC2012 # fingerprint dirs are hex; newest run wins
-    clip=$(ls -t work/"$ds"/video/*/showcase.mp4 2>/dev/null | head -1 || true)
-    [[ -n $clip ]] || { echo "no showcase.mp4 for $ds; run the video stage first" >&2; exit 1; }
-    inputs+=("$clip")
+    dir=$(ls -td work/"$ds"/export/*/ 2>/dev/null | head -1 || true)
+    [[ -n $dir ]] || { echo "no export output for $ds; run the pipeline first" >&2; exit 1; }
     side=${ds##*-}
-    labels+=("${side^} side")
-    durations+=("$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$clip")")
-    echo "$ds: $clip" >&2
+    side_names+=("${side^} side")
+    for part in "showcase.mp4:splat" "mesh.mp4:mesh and water plane"; do
+        clip=$dir${part%%:*}
+        [[ -f $clip ]] || { echo "$clip not found" >&2; exit 1; }
+        inputs+=("$clip")
+        labels+=("${side^} side · ${part#*:}")
+        durations+=("$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$clip")")
+        echo "$ds: $clip" >&2
+    done
 done
 
 # Title card (colours match the showcase sidebar).
-sides=$(printf '%s · ' "${labels[@]}")
+sides=$(printf '%s · ' "${side_names[@]}")
 magick -size ${W}x${H} xc:'rgb(10,12,16)' \
     -fill 'rgb(20,184,166)' -draw "rectangle 160,430 168,650" \
     -font "$FONT" -fill white -pointsize 84 -annotate +200+510 'shoreline-recon v1' \
-    -fill 'rgb(205,210,220)' -pointsize 40 -annotate +200+580 'Water-aware Gaussian splats · Reposalmi pier, Helsinki' \
+    -fill 'rgb(205,210,220)' -pointsize 40 -annotate +200+580 'Water-aware splats and meshes · Reposalmi pier, Helsinki' \
     -fill 'rgb(150,156,168)' -pointsize 30 -annotate +200+640 "${sides% · } · drone capture 2026-10-23" \
     "$tmp/title.png"
 
