@@ -108,7 +108,7 @@ flowchart LR
 
 ### post
 
-- **Water plane.** Fit a plane with RANSAC to sparse points sampled along mask boundaries at the waterline. Alternatively, set a fixed height in config.
+- **Water plane.** Fit the water plane's height to sparse points sampled along mask boundaries at the waterline, with the normal from the level gimbal (ADR-0012; a free RANSAC plane tilted 3°). Alternatively, set a fixed height in config.
 - **Up-axis.** Align the up-axis to the water plane normal.
 - **Cleanup.** Remove geometry below the water plane and small disconnected components.
 - **Water mesh.** Insert the water plane as a separate mesh with its own material.
@@ -217,9 +217,12 @@ backend = "brush"
 steps   = 30000
 
 [post]
-water_plane   = "fit"    # or fixed height, e.g. 0.0
-min_component = 0.01     # fraction of total faces
-target_faces  = 500000
+water_plane       = "fit"    # or a fixed height along the camera up axis (ADR-0012)
+waterline_band_px = 24
+min_component     = 0.01     # fraction of total faces
+target_faces      = 500000
+texture_max_size  = 4096
+floater_max_water = 0.5
 
 [gates]
 min_registered_ratio = 0.85
