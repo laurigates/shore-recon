@@ -18,6 +18,7 @@ shoreline-splat.workspace = true
 shoreline-dense.workspace = true
 shoreline-video.workspace = true
 shoreline-post.workspace = true
+shoreline-export.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 toml.workspace = true
