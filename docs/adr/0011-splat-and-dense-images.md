@@ -42,7 +42,9 @@ OpenMVS.
    that own the binaries' shared libraries.
 3. Both images are `linux/amd64`, built in CI and pinned by digest in the host tools file.
 4. Dense masks use OpenMVS's native support (`--mask-path`, `--ignore-mask-label 0`, black
-   being ignore), pending a check on real data.
+   being ignore). Checked on laajasalo on 2026-10-26: with every mask all black, densify
+   produced 0 points. Unmasked it gave 2,474,072, and with the real masks 2,291,871. A
+   missing mask file stops the run.
 
 ## Consequences
 

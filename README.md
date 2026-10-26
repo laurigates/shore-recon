@@ -12,14 +12,29 @@ Design and milestones: [docs/kickoff.md](docs/kickoff.md). Decisions:
 
 ## Status
 
-M1 in progress. Implemented: config loading and merging, stage DAG,
-fingerprinting, `Stage` trait, stage cache and pipeline runner, tool runner
-(native, podman, docker), the `frames` stage for video input
-([ADR-0005](docs/adr/0005-frames-stage.md)), and the `masks` stage on the
-segmentation container ([ADR-0006](docs/adr/0006-masks-segmentation-container.md),
-[ADR-0007](docs/adr/0007-masks-stage-output.md)). `run` executes these; SfM and
-later stages are M2 onwards. The masks stage pulls a private GHCR image, so
-Docker needs `docker login ghcr.io` with a token that has `read:packages`.
+M1 to M3 are implemented, plus the showcase video. `run` takes a capture through
+`frames`, `masks`, `sfm`, `dense`, `splat` and `video`. Post-processing and export
+are M4 (#4, #5, #39, #40).
+
+| Stage | Backend | Runs on | Decisions |
+|---|---|---|---|
+| `frames` | ffmpeg, blur filter | this machine | [ADR-0005](docs/adr/0005-frames-stage.md) |
+| `masks` | OneFormer segmentation image | this machine (Docker) | [ADR-0006](docs/adr/0006-masks-segmentation-container.md), [ADR-0007](docs/adr/0007-masks-stage-output.md) |
+| `sfm` | COLMAP 4.2.1; metrics read from the model | GPU host | [ADR-0008](docs/adr/0008-v1-deliverables-and-gpu-stages.md), [ADR-0010](docs/adr/0010-sfm-metrics-from-the-model.md) |
+| `dense` | OpenMVS v2.4.0, native masks, textured GLB | GPU host | [ADR-0011](docs/adr/0011-splat-and-dense-images.md) |
+| `splat` | Brush 0.3.0 | GPU host | [ADR-0011](docs/adr/0011-splat-and-dense-images.md) |
+| `video` | gsplat renderer, AV1 plus a share copy | GPU host | [ADR-0008](docs/adr/0008-v1-deliverables-and-gpu-stages.md) |
+
+The tool runner supports native, podman, docker and Apptainer runtimes. A
+container tool can run on a remote host over ssh, with its mounts mirrored by
+rsync ([ADR-0009](docs/adr/0009-remote-tools-over-ssh.md)). The images are
+private GHCR packages: Docker needs `docker login ghcr.io`, and Apptainer on the
+GPU host needs `apptainer registry login`, each with a token that has
+`read:packages`.
+
+`just overnight` runs every dataset detached and logs to `tmp/runs/`. It can
+stop a GPU service on the host for the run (`SHORELINE_STOP_SERVICE`; see
+`.env.example`).
 
 The M0 spike ran end to end with the scripts in [`spike/m0/`](spike/m0/README.md),
 driven by `just` (GPU recipes need a CUDA host: see `.env.example`). Findings:
@@ -54,7 +69,7 @@ dataset config, with whole tool tables replaced by a host file passed as
 crates/
   cli/      clap entrypoint (binary: shoreline-recon)
   core/     config, DAG, fingerprint, Stage trait, cache, pipeline, tool runner
-  frames/   masks/   sfm/   dense/   splat/   post/
+  frames/   masks/   sfm/   dense/   splat/   video/   post/
 containers/ Containerfiles, pinned versions
 configs/    defaults.toml + per-dataset overrides, tools.toml
 docs/       kickoff, ADRs
