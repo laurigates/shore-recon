@@ -9,8 +9,9 @@ pub const PIPELINE: &[(&str, &[&str])] = &[
     ("frames", &[]),
     ("masks", &["frames"]),
     ("sfm", &["frames", "masks"]),
-    ("dense", &["sfm", "masks"]),
-    ("splat", &["sfm", "masks"]),
+    ("dense", &["frames", "masks", "sfm"]),
+    ("splat", &["frames", "masks", "sfm"]),
+    ("video", &["sfm", "splat"]),
     ("post", &["dense", "splat"]),
     ("export", &["post"]),
 ];
@@ -81,7 +82,9 @@ mod tests {
     fn pipeline_order() {
         assert_eq!(
             topo_order(PIPELINE).unwrap(),
-            ["frames", "masks", "sfm", "dense", "splat", "post", "export"]
+            [
+                "frames", "masks", "sfm", "dense", "splat", "video", "post", "export"
+            ]
         );
     }
 
@@ -108,7 +111,7 @@ mod tests {
         let affected: Vec<_> = dependents_of(PIPELINE, "masks").into_iter().collect();
         assert_eq!(
             affected,
-            ["dense", "export", "masks", "post", "sfm", "splat"]
+            ["dense", "export", "masks", "post", "sfm", "splat", "video"]
         );
         assert!(!dependents_of(PIPELINE, "dense").contains("splat"));
     }

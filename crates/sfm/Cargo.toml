@@ -8,6 +8,7 @@ publish.workspace = true
 [dependencies]
 shoreline-core.workspace = true
 serde_json.workspace = true
+image.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

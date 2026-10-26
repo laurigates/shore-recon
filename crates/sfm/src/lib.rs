@@ -8,6 +8,8 @@
 
 pub mod metrics;
 pub mod model;
+pub mod ply;
+pub mod undistort;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
