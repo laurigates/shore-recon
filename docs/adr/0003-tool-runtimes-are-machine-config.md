@@ -43,8 +43,11 @@ committed and must not name a host or its paths (`.claude/rules/remote-gpu-host.
   `--user <uid>:<gid>` of the pipeline process (on a remote host, the ssh user's, from
   `$(id -u):$(id -g)` in the remote shell) and `--env HOME=/tmp`, since that uid usually has no
   passwd entry in the image. Images must run as a non-root user: no writes outside the mounts
-  and `/tmp`. Rootless podman and Apptainer already run as the invoking user and get neither.
-  Rootless docker would map that uid to a subordinate id; use podman on such a machine.
+  and `/tmp`, and nothing read from the image's own `HOME`. Supplementary groups are not
+  passed, so the mounts must be writable by the user or its primary group. A remote docker
+  tool needs a POSIX login shell for the ssh user, which expands `$(...)`. Rootless podman and
+  Apptainer already run as the invoking user and get neither. Rootless docker would map that
+  uid to a subordinate id; use podman on such a machine.
 - Paths containing `:` cannot be expressed in `-v` or `--bind` and are rejected; under Apptainer
   so are paths containing `,`, which `--bind` treats as a list separator.
 - Host tools files are not committed. Keep them outside the repository or name them

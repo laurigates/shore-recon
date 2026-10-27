@@ -68,10 +68,32 @@ pub struct Remote {
 const REMOTE_IDS: &str = "$(id -u):$(id -g)";
 
 /// `<uid>:<gid>` of this process, for docker's `--user`. Rootful docker runs
-/// as root otherwise, and its outputs in the mounts are root-owned (#20).
-fn local_ids() -> String {
-    let (uid, gid) = (rustix::process::getuid(), rustix::process::getgid());
-    format!("{}:{}", uid.as_raw(), gid.as_raw())
+/// as root otherwise, and its outputs in the mounts are root-owned (#20). The
+/// effective ids, as they own what this process creates and deletes.
+#[cfg(unix)]
+fn local_ids() -> Option<String> {
+    let (uid, gid) = (rustix::process::geteuid(), rustix::process::getegid());
+    Some(format!("{}:{}", uid.as_raw(), gid.as_raw()))
+}
+
+/// Docker Desktop outside Unix maps file ownership itself.
+#[cfg(not(unix))]
+fn local_ids() -> Option<String> {
+    None
+}
+
+/// One word of a container command line.
+enum Word {
+    /// Passed as is locally, single-quoted for a remote shell.
+    Lit(OsString),
+    /// Left for a remote shell to expand; only ever on remote command lines.
+    Shell(&'static str),
+}
+
+impl<T: Into<OsString>> From<T> for Word {
+    fn from(s: T) -> Self {
+        Word::Lit(s.into())
+    }
 }
 
 /// rsync passes remote paths to the remote shell unquoted, so remote paths are
@@ -286,24 +308,22 @@ impl Tool {
             };
         self.check_mounts(inv)?;
         let remote = self.spec.remote.as_ref();
-        let mut words: Vec<OsString> = vec![engine.into()];
-        words.extend(prefix.iter().map(OsString::from));
-        // The one word the remote shell must expand rather than quote.
-        let mut raw = None;
+        let mut words: Vec<Word> = vec![engine.into()];
+        words.extend(prefix.iter().map(Word::from));
         if self.spec.runtime == Runtime::Docker {
-            words.push("--user".into());
-            match remote {
-                Some(_) => {
-                    raw = Some(words.len());
-                    words.push(REMOTE_IDS.into());
-                }
-                None => words.push(local_ids().into()),
+            let ids = match remote {
+                Some(_) => Some(Word::Shell(REMOTE_IDS)),
+                None => local_ids().map(Word::from),
+            };
+            if let Some(ids) = ids {
+                words.push("--user".into());
+                words.push(ids);
+                // A uid without a passwd entry in the image has `/` as its home.
+                words.extend(["--env", "HOME=/tmp"].map(Word::from));
             }
-            // A uid without a passwd entry in the image has `/` as its home.
-            words.extend(["--env", "HOME=/tmp"].map(OsString::from));
         }
         if self.spec.gpu {
-            words.extend(gpu_flag.iter().map(OsString::from));
+            words.extend(gpu_flag.iter().map(Word::from));
         }
         for dir in &inv.mounts {
             let mut bind = match remote {
@@ -313,7 +333,7 @@ impl Tool {
             bind.push(":");
             bind.push(dir);
             words.push(bind_flag.into());
-            words.push(bind);
+            words.push(bind.into());
         }
         let image = self.spec.image.as_deref().expect("validated above");
         words.push(match self.spec.runtime {
@@ -321,18 +341,22 @@ impl Tool {
             _ => image.into(),
         });
         words.push(self.spec.program.clone().into());
-        words.extend(inv.args.iter().cloned());
+        words.extend(inv.args.iter().cloned().map(Word::from));
 
         let Some(remote) = remote else {
-            let mut cmd = Command::new(&words[0]);
-            cmd.args(&words[1..]);
+            let mut words = words.into_iter().map(|w| match w {
+                Word::Lit(s) => s,
+                Word::Shell(_) => unreachable!("shell words are only built for remote runs"),
+            });
+            let mut cmd = Command::new(words.next().expect("engine"));
+            cmd.args(words);
             return Ok(cmd);
         };
         let env = (!remote.env.is_empty()).then(|| "env".to_owned());
         let vars = remote.env.iter().map(|(k, v)| format!("{k}={v}"));
-        let words = words.iter().enumerate().map(|(i, w)| match raw {
-            Some(r) if r == i => REMOTE_IDS.to_owned(),
-            _ => sh_quote(&w.to_string_lossy()),
+        let words = words.iter().map(|w| match w {
+            Word::Lit(s) => sh_quote(&s.to_string_lossy()),
+            Word::Shell(s) => (*s).to_owned(),
         });
         let line = env
             .into_iter()
@@ -593,7 +617,7 @@ mod tests {
                 "run",
                 "--rm",
                 "--user",
-                &local_ids(),
+                &local_ids().unwrap(),
                 "--env",
                 "HOME=/tmp",
                 "--gpus",
@@ -850,7 +874,7 @@ mod tests {
                 "run",
                 "--rm",
                 "--user",
-                &local_ids(),
+                &local_ids().unwrap(),
                 "--env",
                 "HOME=/tmp",
                 IMAGE,
@@ -863,7 +887,7 @@ mod tests {
     fn docker_runs_as_this_process_user() {
         // Otherwise rootful docker leaves root-owned outputs that an
         // interrupted stage's discard cannot delete (#20).
-        let ids = local_ids();
+        let ids = local_ids().unwrap();
         let (uid, gid) = ids.split_once(':').unwrap();
         assert!(
             uid.parse::<u32>().is_ok() && gid.parse::<u32>().is_ok(),
