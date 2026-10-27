@@ -63,6 +63,17 @@ pub struct Remote {
     pub env: BTreeMap<String, String>,
 }
 
+/// Docker's `--user` on a remote host: the remote shell expands it to the ssh
+/// user's ids, which own the mirror (ADR-0009).
+const REMOTE_IDS: &str = "$(id -u):$(id -g)";
+
+/// `<uid>:<gid>` of this process, for docker's `--user`. Rootful docker runs
+/// as root otherwise, and its outputs in the mounts are root-owned (#20).
+fn local_ids() -> String {
+    let (uid, gid) = (rustix::process::getuid(), rustix::process::getgid());
+    format!("{}:{}", uid.as_raw(), gid.as_raw())
+}
+
 /// rsync passes remote paths to the remote shell unquoted, so remote paths are
 /// limited to characters no shell treats specially.
 fn shell_safe(path: &Path) -> bool {
@@ -84,6 +95,11 @@ fn ssh(host: &str, words: impl IntoIterator<Item = String>) -> Command {
         .map(|w| sh_quote(&w))
         .collect::<Vec<_>>()
         .join(" ");
+    ssh_line(host, line)
+}
+
+/// `ssh -o BatchMode=yes <host> -- <line>`, the line as the remote shell reads it.
+fn ssh_line(host: &str, line: String) -> Command {
     let mut cmd = Command::new("ssh");
     cmd.args(["-o", "BatchMode=yes", host, "--"]).arg(line);
     cmd
@@ -272,6 +288,20 @@ impl Tool {
         let remote = self.spec.remote.as_ref();
         let mut words: Vec<OsString> = vec![engine.into()];
         words.extend(prefix.iter().map(OsString::from));
+        // The one word the remote shell must expand rather than quote.
+        let mut raw = None;
+        if self.spec.runtime == Runtime::Docker {
+            words.push("--user".into());
+            match remote {
+                Some(_) => {
+                    raw = Some(words.len());
+                    words.push(REMOTE_IDS.into());
+                }
+                None => words.push(local_ids().into()),
+            }
+            // A uid without a passwd entry in the image has `/` as its home.
+            words.extend(["--env", "HOME=/tmp"].map(OsString::from));
+        }
         if self.spec.gpu {
             words.extend(gpu_flag.iter().map(OsString::from));
         }
@@ -300,8 +330,16 @@ impl Tool {
         };
         let env = (!remote.env.is_empty()).then(|| "env".to_owned());
         let vars = remote.env.iter().map(|(k, v)| format!("{k}={v}"));
-        let words = words.iter().map(|w| w.to_string_lossy().into_owned());
-        Ok(ssh(&remote.host, env.into_iter().chain(vars).chain(words)))
+        let words = words.iter().enumerate().map(|(i, w)| match raw {
+            Some(r) if r == i => REMOTE_IDS.to_owned(),
+            _ => sh_quote(&w.to_string_lossy()),
+        });
+        let line = env
+            .into_iter()
+            .chain(vars)
+            .map(|w| sh_quote(&w))
+            .chain(words);
+        Ok(ssh_line(&remote.host, line.collect::<Vec<_>>().join(" ")))
     }
 
     /// The file transfers around a remote run of `inv` that logs to `log`;
@@ -554,6 +592,10 @@ mod tests {
                 "docker",
                 "run",
                 "--rm",
+                "--user",
+                &local_ids(),
+                "--env",
+                "HOME=/tmp",
                 "--gpus",
                 "all",
                 "-v",
@@ -665,7 +707,10 @@ mod tests {
         let cmd = tool.command(&Invocation::new(["help"])).unwrap();
         assert_eq!(
             argv(&cmd).last().unwrap(),
-            &format!("'docker' 'run' '--rm' '{IMAGE}' 'colmap' 'help'")
+            &format!(
+                "'docker' 'run' '--rm' '--user' $(id -u):$(id -g) '--env' 'HOME=/tmp' \
+                 '{IMAGE}' 'colmap' 'help'"
+            )
         );
     }
 
@@ -798,7 +843,59 @@ mod tests {
         let cmd = container(Runtime::Docker, false)
             .command(&Invocation::default())
             .unwrap();
-        assert_eq!(argv(&cmd), ["docker", "run", "--rm", IMAGE, "colmap"]);
+        assert_eq!(
+            argv(&cmd),
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--user",
+                &local_ids(),
+                "--env",
+                "HOME=/tmp",
+                IMAGE,
+                "colmap"
+            ]
+        );
+    }
+
+    #[test]
+    fn docker_runs_as_this_process_user() {
+        // Otherwise rootful docker leaves root-owned outputs that an
+        // interrupted stage's discard cannot delete (#20).
+        let ids = local_ids();
+        let (uid, gid) = ids.split_once(':').unwrap();
+        assert!(
+            uid.parse::<u32>().is_ok() && gid.parse::<u32>().is_ok(),
+            "{ids}"
+        );
+        let cmd = container(Runtime::Docker, false)
+            .command(&Invocation::default())
+            .unwrap();
+        let args = argv(&cmd);
+        let at = args.iter().position(|a| a == "--user").unwrap();
+        assert_eq!(args[at + 1], ids);
+    }
+
+    #[test]
+    fn podman_and_apptainer_get_no_user_flag() {
+        // Rootless podman and Apptainer already run as the invoking user.
+        for runtime in [Runtime::Podman, Runtime::Apptainer] {
+            let cmd = container(runtime, false)
+                .command(&Invocation::default())
+                .unwrap();
+            assert!(!argv(&cmd).contains(&"--user".to_owned()), "{runtime:?}");
+        }
+    }
+
+    #[test]
+    fn remote_docker_takes_the_ids_from_the_remote_shell_only() {
+        // An argument that looks like the substitution stays quoted.
+        let tool = remote(container(Runtime::Docker, false));
+        let cmd = tool.command(&Invocation::new([REMOTE_IDS])).unwrap();
+        let line = argv(&cmd).pop().unwrap();
+        assert!(line.contains("'--user' $(id -u):$(id -g) "), "{line}");
+        assert!(line.ends_with("'colmap' '$(id -u):$(id -g)'"), "{line}");
     }
 
     #[test]

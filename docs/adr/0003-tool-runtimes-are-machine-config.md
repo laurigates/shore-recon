@@ -38,8 +38,13 @@ committed and must not name a host or its paths (`.claude/rules/remote-gpu-host.
 - The runtime is not fingerprinted: the same image under docker or podman reuses the cache.
 - Apptainer passes the host environment into the container and mounts `$HOME` by default,
   unlike docker and podman. The spike ran COLMAP the same way (ADR-0002, decision 5).
-- Docker runs as root by default, so on Linux its bind-mounted outputs are root-owned; rootless
-  podman maps them to the invoking user. There is no `--user` mapping yet.
+- Docker runs as root by default, so on Linux its bind-mounted outputs would be root-owned and an
+  interrupted stage's directory could not be discarded (#20). The docker runtime therefore passes
+  `--user <uid>:<gid>` of the pipeline process (on a remote host, the ssh user's, from
+  `$(id -u):$(id -g)` in the remote shell) and `--env HOME=/tmp`, since that uid usually has no
+  passwd entry in the image. Images must run as a non-root user: no writes outside the mounts
+  and `/tmp`. Rootless podman and Apptainer already run as the invoking user and get neither.
+  Rootless docker would map that uid to a subordinate id; use podman on such a machine.
 - Paths containing `:` cannot be expressed in `-v` or `--bind` and are rejected; under Apptainer
   so are paths containing `,`, which `--bind` treats as a list separator.
 - Host tools files are not committed. Keep them outside the repository or name them
