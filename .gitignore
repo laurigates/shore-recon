@@ -5,3 +5,4 @@
 *.onnx
 .env
 *.local.toml
+__pycache__/
