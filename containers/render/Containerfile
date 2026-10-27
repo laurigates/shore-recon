@@ -1,10 +1,10 @@
 # Showcase-video renderer for the video stage (ADR-0008, #29): render_video, a port of the M0
-# spike's render_orbit.py, with gsplat 1.5.3 on torch 2.9.1 (CUDA 12.8) for splats, moderngl over
+# spike's render_orbit.py, with gsplat 1.5.3 on torch 2.13.0 (CUDA 13.0) for splats, moderngl over
 # headless EGL for meshes (ADR-0012), and a static ffmpeg with SVT-AV1. gsplat's CUDA extension is compiled here for sm_89 (RTX 4090), so nothing JIT-compiles
 # at run time and the image needs no writable cache under Apptainer. Invoked as `render_video ...`
 # under `apptainer exec --nv`; the entrypoint is not used.
 # Built and pushed by .github/workflows/containers.yml.
-FROM nvidia/cuda:12.8.1-devel-ubuntu24.04@sha256:520292dbb4f755fd360766059e62956e9379485d9e073bbd2f6e3c20c270ed66 AS build
+FROM nvidia/cuda:13.0.2-devel-ubuntu24.04@sha256:5dc1bca23d05bd37b011be68ec470c03b403a5da07ec3a86e41af9470e9d0cc6 AS build
 
 ARG GSPLAT_SDIST=https://files.pythonhosted.org/packages/6d/94/a0963873708223385ac926112dc3e40ab08297784ac53d95309b4cb5a801/gsplat-1.5.3.tar.gz
 ARG GSPLAT_SHA256=343f080c470e891ba3c697c03bdf0952cb982d1d535fdc24adb23c2cb4fba906
@@ -24,7 +24,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.lock /tmp/requirements.lock
 RUN python3.12 -m venv /opt/venv \
     && /opt/venv/bin/pip install --require-hashes --no-deps -r /tmp/requirements.lock \
-    && /opt/venv/bin/python -c "import torch, sys; sys.exit(0 if torch.version.cuda == '12.8' else f'torch CUDA {torch.version.cuda}, want 12.8')"
+    && /opt/venv/bin/python -c "import torch, sys; sys.exit(0 if torch.version.cuda == '13.0' else f'torch CUDA {torch.version.cuda}, want 13.0')"
 
 # PyPI's gsplat wheel carries no compiled code, so build the sdist against the installed torch.
 RUN curl -fsSL -o /tmp/gsplat.tar.gz "${GSPLAT_SDIST}" \
