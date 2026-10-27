@@ -57,6 +57,18 @@ jobs:
       PUSH: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # render installs only from its lock, so a pin bumped in requirements.txt alone never
+      # reaches the image (#63). gsplat is built from its sdist and is not in the lock.
+      - name: Check requirements.txt against the lock
+        if: matrix.name == 'render'
+        working-directory: containers/render
+        run: |
+          status=0
+          for pin in $(grep -E '^[A-Za-z0-9._-]+==' requirements.txt | grep -v '^gsplat==' | cut -d' ' -f1); do
+            grep -qiE "^${pin//./\\.} " requirements.lock \
+              || { echo "::error file=containers/render/requirements.txt::${pin} is not in requirements.lock; regenerate the lock"; status=1; }
+          done
+          exit $status
       - name: Free disk space
         if: matrix.name == 'openmvs' || matrix.name == 'render'
         run: |
