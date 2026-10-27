@@ -44,6 +44,12 @@ behind a title card into `work/demo/shoreline-recon-v1-demo.mp4`, with a chapter
 per part, a timeline bar under the picture for seeking, and a share copy
 ([ADR-0013](docs/adr/0013-demo-video-format.md)).
 
+`just viewer` serves a local web viewer for everything the export stage has written under
+`work/`: pick a dataset and run, orbit the splat and the mesh with its water plane, compare them
+with the splat and mesh before post, and play the videos. It needs only `python3` and, for
+three.js and Spark, network access to jsDelivr
+([ADR-0015](docs/adr/0015-local-export-viewer.md)).
+
 `just overnight` runs every dataset detached and logs to `tmp/runs/`. It can
 stop a GPU service on the host for the run (`SHORELINE_STOP_SERVICE`; see
 `.env.example`).
@@ -104,4 +110,5 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo nextest run                       # unit tests
 cargo nextest run --profile integration # tests named *::integration::*, need tools/GPU
+python3 -m unittest discover -s scripts -p 'test_*.py'   # script tests
 ```

@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>shoreline-recon viewer</title>
+<!-- Served by scripts/viewer.py (`just viewer`); see ADR-0015. -->
+<style>
+  :root {
+    --bg: #0a0c10; --panel: #12161d; --line: #232a35; --text: #e6e9ef; --muted: #8b94a3;
+    --splat: #14b8a6; --mesh: #f59e0b; --raw: #818cf8;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 14px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  body { display: flex; }
+  aside { width: 320px; flex: none; height: 100%; overflow-y: auto; background: var(--panel);
+    border-right: 1px solid var(--line); padding: 16px; display: flex; flex-direction: column; gap: 16px; }
+  main { flex: 1; position: relative; min-width: 0; }
+  canvas { display: block; width: 100%; height: 100%; }
+  h1 { font-size: 16px; margin: 0; letter-spacing: .02em; }
+  h2 { font-size: 12px; margin: 0 0 6px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
+  button, select { font: inherit; color: var(--text); background: #1a202a; border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px 8px; cursor: pointer; }
+  button:hover { border-color: #3a4454; }
+  .datasets button { display: block; width: 100%; text-align: left; margin-bottom: 4px; }
+  .datasets button[aria-pressed="true"] { border-color: var(--splat); }
+  .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  label.layer { display: flex; gap: 8px; align-items: center; padding: 4px 0; cursor: pointer; }
+  label.layer[data-missing] { color: var(--muted); cursor: default; }
+  .swatch { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+  .muted { color: var(--muted); }
+  .metrics div { display: flex; justify-content: space-between; }
+  #status { position: absolute; left: 16px; bottom: 16px; padding: 6px 10px; border-radius: 6px;
+    background: rgba(18, 22, 29, .85); color: var(--muted); pointer-events: none; }
+  #status:empty { display: none; }
+  #help { position: absolute; right: 16px; bottom: 16px; color: var(--muted); font-size: 12px; text-align: right; }
+  dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 12px; max-width: 90vw; }
+  dialog video { display: block; max-width: 86vw; max-height: 80vh; }
+  dialog::backdrop { background: rgba(0, 0, 0, .7); }
+  @media (max-width: 700px) {
+    body { flex-direction: column; }
+    aside { width: 100%; height: auto; max-height: 45%; border-right: 0; border-bottom: 1px solid var(--line); }
+  }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/",
+    "@sparkjsdev/spark": "https://cdn.jsdelivr.net/npm/@sparkjsdev/spark@2.3.1/dist/spark.module.js"
+  }
+}
+</script>
+</head>
+<body>
+<aside>
+  <div class="row" style="justify-content: space-between">
+    <h1>shoreline-recon</h1>
+    <button id="reload" title="Re-read work/">Reload</button>
+  </div>
+  <section><h2>Datasets</h2><div class="datasets" id="datasets"><span class="muted">Loading…</span></div></section>
+  <section id="run" hidden><h2>Run</h2><select id="exports" style="width: 100%"></select></section>
+  <section id="layers-section" hidden><h2>Layers</h2><div id="layers"></div></section>
+  <section id="metrics-section" hidden><h2>Metrics</h2><div class="metrics" id="metrics"></div></section>
+  <section id="videos-section" hidden><h2>Videos</h2><div class="row" id="videos"></div></section>
+</aside>
+<main>
+  <div id="status"></div>
+  <div id="help">Drag: orbit · right-drag: pan · scroll: zoom · F: frame · 1–5: layers</div>
+</main>
+<dialog id="player"><video controls autoplay loop></video>
+  <form method="dialog" class="row" style="justify-content: flex-end; margin-top: 8px"><button>Close</button></form>
+</dialog>
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { SparkRenderer, SplatMesh } from "@sparkjsdev/spark";
+
+// Layers: the splat and mesh deliverables, the water plane (a node of model.glb), and the raw
+// splat and mesh of the same run (before post). Everything is drawn in the model frame of
+// model.glb (+Y up, water at y = 0); PLY splats and the raw mesh are in the reconstruction frame
+// and get water_plane.json's model_from_reconstruction (ADR-0012).
+const LAYERS = [
+  { key: "splat", label: "Splat", color: "var(--splat)", on: true },
+  { key: "mesh", label: "Mesh", color: "var(--mesh)", on: false },
+  { key: "water", label: "Water plane", color: "#3b82c4", on: true },
+  { key: "splat_raw", label: "Splat before post", color: "var(--raw)", on: false },
+  { key: "mesh_raw", label: "Mesh before post", color: "var(--raw)", on: false },
+];
+const $ = (id) => document.getElementById(id);
+const statusEl = $("status");
+
+const renderer = new THREE.WebGLRenderer({ antialias: false });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setClearColor(0x0a0c10);
+$("help").before(renderer.domElement);
+const scene = new THREE.Scene();
+scene.add(new SparkRenderer({ renderer }));
+const camera = new THREE.PerspectiveCamera(50, 1, 0.01, 2000);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+camera.position.set(0, 3, 8);
+
+function resize() {
+  const { clientWidth: w, clientHeight: h } = renderer.domElement.parentElement;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / Math.max(h, 1);
+  camera.updateProjectionMatrix();
+}
+addEventListener("resize", resize);
+resize();
+renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+
+let index = { datasets: [] };
+let current = null;       // { dataset, export }
+let loaded = {};          // layer key -> Object3D
+let generation = 0;       // bumps on every selection, so late loads of an old one are dropped
+const visible = Object.fromEntries(LAYERS.map((l) => [l.key, l.on]));
+
+const mib = (bytes) => bytes < 1048576 ? `${Math.ceil(bytes / 1024)} KiB` : `${(bytes / 1048576).toFixed(0)} MiB`;
+const fmt = (n) => Math.round(n).toLocaleString("en-US");
+
+function setStatus(text) { statusEl.textContent = text; }
+
+async function fetchIndex() {
+  const r = await fetch("/index.json", { cache: "no-store" });
+  index = await r.json();
+}
+
+function renderDatasets() {
+  const el = $("datasets");
+  el.replaceChildren();
+  if (!index.datasets.length) {
+    el.innerHTML = `<span class="muted">No export outputs under ${index.work} yet.</span>`;
+    return;
+  }
+  for (const ds of index.datasets) {
+    const b = document.createElement("button");
+    b.textContent = ds.name;
+    b.setAttribute("aria-pressed", String(current?.dataset.name === ds.name));
+    b.onclick = () => select(ds.name, ds.exports[0].id);
+    el.append(b);
+  }
+}
+
+function renderRun() {
+  const { dataset, export: ex } = current;
+  const sel = $("exports");
+  sel.replaceChildren(...dataset.exports.map((e, i) => {
+    const o = document.createElement("option");
+    o.value = e.id;
+    o.textContent = `${e.id.slice(0, 12)} · ${new Date(e.modified * 1000).toLocaleString()}${i ? "" : " (latest)"}`;
+    o.selected = e.id === ex.id;
+    return o;
+  }));
+  sel.onchange = () => select(dataset.name, sel.value);
+  $("run").hidden = false;
+
+  const layers = $("layers");
+  layers.replaceChildren();
+  LAYERS.forEach((l, i) => {
+    const url = l.key === "water" ? ex.layers.mesh : ex.layers[l.key];
+    const label = document.createElement("label");
+    label.className = "layer";
+    const box = Object.assign(document.createElement("input"), { type: "checkbox", checked: visible[l.key], disabled: !url });
+    box.onchange = () => { visible[l.key] = box.checked; apply(); };
+    box.dataset.key = l.key;
+    const size = url && l.key !== "water" ? ` <span class="muted">${mib(ex.sizes[url])}</span>` : "";
+    label.innerHTML = `<span class="swatch" style="background:${l.color}"></span><span>${i + 1}. ${l.label}${size}</span>`;
+    label.prepend(box);
+    if (!url) label.dataset.missing = "";
+    layers.append(label);
+  });
+  $("layers-section").hidden = false;
+
+  const m = $("metrics");
+  m.replaceChildren();
+  const rows = [["Gaussians", ex.metrics.gaussians], ["Mesh faces", ex.metrics.mesh_faces]].filter(([, v]) => v != null);
+  for (const [k, v] of rows) {
+    const d = document.createElement("div");
+    d.innerHTML = `<span class="muted">${k}</span><span>${fmt(v)}</span>`;
+    m.append(d);
+  }
+  $("metrics-section").hidden = !rows.length;
+
+  const v = $("videos");
+  v.replaceChildren(...ex.videos.map((video) => {
+    const b = document.createElement("button");
+    b.textContent = video.name;
+    b.onclick = () => play(video.url);
+    return b;
+  }));
+  $("videos-section").hidden = !ex.videos.length;
+}
+
+function play(url) {
+  const dlg = $("player");
+  dlg.querySelector("video").src = url;
+  dlg.showModal();
+}
+$("player").addEventListener("close", () => { const v = $("player").querySelector("video"); v.pause(); v.removeAttribute("src"); });
+
+function dispose(obj) {
+  scene.remove(obj);
+  if (obj.dispose) obj.dispose();
+  obj.traverse?.((o) => {
+    o.geometry?.dispose();
+    for (const mat of [o.material].flat().filter(Boolean)) {
+      for (const v of Object.values(mat)) if (v?.isTexture) v.dispose();
+      mat.dispose();
+    }
+  });
+}
+
+function apply() {
+  for (const [key, obj] of Object.entries(loaded)) {
+    if (key === "mesh") {
+      obj.traverse((o) => { if (o.isMesh) o.visible = isWater(o) ? visible.water : visible.mesh; });
+      obj.visible = visible.mesh || visible.water;
+    } else {
+      obj.visible = visible[key];
+    }
+  }
+  for (const key of ["splat_raw", "mesh_raw"]) if (visible[key] && !loaded[key]) loadLayer(key, generation);
+}
+
+const isWater = (o) => /water/i.test(o.name) || /water/i.test(o.parent?.name ?? "");
+
+async function modelFromReconstruction(ex) {
+  if (!ex.water_plane) return null;
+  const plane = await (await fetch(ex.water_plane)).json();
+  const m = plane.model_from_reconstruction;
+  return new THREE.Matrix4().set(...m.flat());
+}
+
+function place(obj, matrix) {
+  if (matrix) {
+    matrix.decompose(obj.position, obj.quaternion, obj.scale);
+  } else {
+    obj.quaternion.set(1, 0, 0, 0); // no plane: show the COLMAP frame (y down) upright
+  }
+}
+
+let frameMatrix = null;
+const pending = new Map();
+
+async function loadLayer(key, gen) {
+  const ex = current.export;
+  const url = ex.layers[key];
+  const id = `${gen}:${key}`;
+  if (!url || pending.has(id)) return;
+  const job = (async () => {
+    setStatus(`Loading ${key.replace("_", " ")} (${mib(ex.sizes[url])})…`);
+    let obj;
+    if (key.startsWith("splat")) {
+      obj = new SplatMesh({ url });
+      place(obj, frameMatrix);
+      await obj.initialized;
+    } else {
+      const gltf = await new GLTFLoader().loadAsync(url);
+      obj = gltf.scene;
+      // Draw the alpha-blended water before the splats, writing depth, so it tints only what
+      // lies below the surface instead of being blended over the whole splat.
+      obj.traverse((o) => {
+        if (o.isMesh && isWater(o)) { o.renderOrder = -1; o.material.depthWrite = true; }
+      });
+      if (key === "mesh_raw") place(obj, frameMatrix);
+    }
+    if (gen !== generation) { dispose(obj); return; }
+    loaded[key] = obj;
+    scene.add(obj);
+    apply();
+  })();
+  pending.set(id, job);
+  try { await job; } catch (e) { console.error(e); setStatus(`Failed to load ${url}: ${e.message ?? e}`); return; }
+  finally { pending.delete(id); }
+  if (!pending.size) setStatus("");
+}
+
+function frame() {
+  const box = new THREE.Box3();
+  const mesh = loaded.mesh;
+  if (mesh) {
+    mesh.traverse((o) => { if (o.isMesh && !isWater(o)) box.expandByObject(o); });
+  } else if (loaded.splat) {
+    box.copy(loaded.splat.getBoundingBox(true)).applyMatrix4(loaded.splat.matrixWorld);
+  }
+  if (box.isEmpty()) return;
+  const center = box.getCenter(new THREE.Vector3());
+  const radius = box.getSize(new THREE.Vector3()).length() / 2;
+  const dist = radius / Math.sin(THREE.MathUtils.degToRad(camera.fov / 2)) * 0.9;
+  // +Z of the model frame points back towards the capture cameras.
+  camera.position.copy(center).add(new THREE.Vector3(0, 0.45, 1).normalize().multiplyScalar(dist));
+  camera.near = dist / 1000;
+  camera.far = dist * 20;
+  camera.updateProjectionMatrix();
+  controls.target.copy(center);
+  controls.update();
+}
+
+async function select(name, id) {
+  const dataset = index.datasets.find((d) => d.name === name);
+  const ex = dataset?.exports.find((e) => e.id === id) ?? dataset?.exports[0];
+  if (!ex) return;
+  const gen = ++generation;
+  for (const obj of Object.values(loaded)) dispose(obj);
+  loaded = {};
+  current = { dataset, export: ex };
+  history.replaceState(null, "", `#${encodeURIComponent(name)}/${ex.id}`);
+  renderDatasets();
+  renderRun();
+  frameMatrix = await modelFromReconstruction(ex).catch(() => null);
+  if (gen !== generation) return;
+  const keys = ["mesh", "splat", ...["splat_raw", "mesh_raw"].filter((k) => visible[k])];
+  await Promise.all(keys.map((k) => loadLayer(k, gen)));
+  if (gen === generation) frame();
+}
+
+addEventListener("keydown", (e) => {
+  if (e.target.closest?.("select, input, dialog")) return;
+  if (e.key === "f" || e.key === "F") frame();
+  const layer = LAYERS[Number(e.key) - 1];
+  if (layer) {
+    const box = document.querySelector(`input[data-key="${layer.key}"]`);
+    if (box && !box.disabled) { box.checked = !box.checked; box.onchange(); }
+  }
+});
+
+async function start() {
+  try { await fetchIndex(); } catch (e) { setStatus(`Cannot read /index.json: ${e.message}`); return; }
+  renderDatasets();
+  const [name, id] = decodeURIComponent(location.hash.slice(1)).split("/");
+  const first = index.datasets.find((d) => d.name === name) ?? index.datasets[0];
+  if (first) select(first.name, first.name === name ? id : first.exports[0].id);
+}
+$("reload").onclick = async () => {
+  await fetchIndex();
+  if (current) select(current.dataset.name, current.export.id); else start();
+};
+start();
+</script>
+</body>
+</html>

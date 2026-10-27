@@ -20,6 +20,7 @@ check:
     cargo fmt --all --check
     cargo clippy --workspace --all-targets -- -D warnings
     cargo nextest run
+    python3 -m unittest discover -s scripts -p 'test_*.py'
 
 # ---------- pipeline (shoreline-recon) ----------
 
@@ -106,6 +107,11 @@ telegram-send file caption="":
 [group('local')]
 meta:
     python3 -I spike/m0/local/make_meta.py . work/renders/meta
+
+# Browse every dataset's export outputs in work/ (splat, mesh, water, raw layers, videos) at http://127.0.0.1:<port>/
+[group('local')]
+viewer port="8765":
+    python3 -I scripts/viewer.py --work work --port {{port}} --open
 
 # Make a copy under the 30 MiB attachment limit (1280 px wide, CRF 38, chapters kept)
 [group('local')]
