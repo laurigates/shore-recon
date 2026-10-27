@@ -120,6 +120,22 @@ fn with_dependencies<'a>(
     Ok(selected)
 }
 
+/// Why an interrupted output could not be discarded. Permission errors are
+/// usually root-owned files from a container that ran as root (#20).
+fn discard_error(stage: &'static str, dir: &Path, source: std::io::Error) -> Error {
+    if source.kind() != std::io::ErrorKind::PermissionDenied {
+        return io_error(dir)(source);
+    }
+    Error::Stage {
+        stage,
+        message: format!(
+            "cannot discard the interrupted output {dir}: {source}. Files written by a container \
+             that ran as root (#20) need `sudo rm -rf {dir}`",
+            dir = dir.display()
+        ),
+    }
+}
+
 /// Reuse the cached output for `stage` or run it into a fresh directory.
 fn run_stage(
     ctx: &RunContext,
@@ -151,7 +167,7 @@ fn run_stage(
         return Ok(result(true, manifest.metrics));
     }
     if dir.exists() {
-        std::fs::remove_dir_all(&dir).map_err(io_error(&dir))?;
+        std::fs::remove_dir_all(&dir).map_err(|e| discard_error(name, &dir, e))?;
         on_event(Event::Discarded {
             stage: name,
             dir: &dir,
@@ -214,6 +230,23 @@ mod tests {
     use crate::stage::{Inputs, StageRun};
     use crate::tools::{Invocation, Runtime, Tool, ToolSpec};
     use crate::{Config, Error, Tools};
+
+    #[test]
+    fn a_permission_error_on_discard_names_the_cause_and_the_fix() {
+        let dir = Path::new("/work/d/masks/abc");
+        let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let message = discard_error("masks", dir, denied).to_string();
+        assert!(message.contains("#20"), "{message}");
+        assert!(
+            message.contains("sudo rm -rf /work/d/masks/abc"),
+            "{message}"
+        );
+        let other = std::io::Error::from(std::io::ErrorKind::NotFound);
+        assert!(matches!(
+            discard_error("masks", dir, other),
+            Error::Io { path, .. } if path == dir
+        ));
+    }
 
     /// Writes `out.txt` and reports `score` and `masked`; fails its gate when
     /// `score < gates.min_registered_ratio`, warns when

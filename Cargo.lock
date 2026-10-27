@@ -564,6 +564,7 @@ name = "shoreline-core"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",
