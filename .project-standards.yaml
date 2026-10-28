@@ -13,7 +13,7 @@ components:
   justfile: "2025.1"
   readme: "2025.1"
   readme_style: "standard"
-  readme_has_logo: false
+  readme_has_logo: true
   readme_badges: ["ci", "containers", "rust", "license"]
 
 # Documented deviations from standard
@@ -27,4 +27,4 @@ deviations:
   - component: pre-commit
     reason: "Not adopted; fmt, clippy and tests run via just check and CI"
   - component: readme
-    reason: "Private repo: no logo asset; GitHub-native workflow badges and static shields badges instead of github/license and github/stars, which render 'repo not found'"
+    reason: "Private repo: GitHub-native workflow badges and static shields badges instead of github/license and github/stars, which render 'repo not found'"

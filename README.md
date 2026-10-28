@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="assets/icon.png" alt="shoreline-recon icon: textured mesh of the Reposalmi pier" width="128" height="128">
+
 # shoreline-recon
 
 **Water-aware photogrammetry and Gaussian splatting for shoreline structures**
@@ -8,6 +10,8 @@
 [![Containers](https://github.com/laurigates/shore-recon/actions/workflows/containers.yml/badge.svg?branch=main)](https://github.com/laurigates/shore-recon/actions/workflows/containers.yml)
 [![Rust](https://img.shields.io/badge/rust-1.99.1-orange)](rust-toolchain.toml)
 [![License](https://img.shields.io/badge/license-private-lightgrey)](#license)
+
+<img src="assets/banner.jpg" alt="Vartiosaari pier from one camera position: Gaussian splat on the left, textured mesh with its synthetic water plane on the right" width="100%">
 
 </div>
 
