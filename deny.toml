@@ -9,7 +9,7 @@ version = 2
 
 [licenses]
 version = 2
-# The workspace crates are `publish = false` and carry no licence field.
+# The workspace crates are MIT and `publish = false`; cargo-deny skips them.
 private = { ignore = true }
 # Every licence in the current tree; a dependency bringing in another fails the check.
 allow = [

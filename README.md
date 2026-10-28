@@ -9,7 +9,8 @@
 [![CI](https://github.com/laurigates/shore-recon/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/laurigates/shore-recon/actions/workflows/ci.yml)
 [![Containers](https://github.com/laurigates/shore-recon/actions/workflows/containers.yml/badge.svg?branch=main)](https://github.com/laurigates/shore-recon/actions/workflows/containers.yml)
 [![Rust](https://img.shields.io/badge/rust-1.99.1-orange)](rust-toolchain.toml)
-[![License](https://img.shields.io/badge/license-private-lightgrey)](#license)
+[![License](https://img.shields.io/github/license/laurigates/shore-recon)](LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/laurigates/shore-recon)](https://github.com/laurigates/shore-recon/stargazers)
 
 <img src="assets/banner.jpg" alt="Vartiosaari pier from one camera position: Gaussian splat on the left, textured mesh with its synthetic water plane on the right" width="100%">
 
@@ -201,4 +202,4 @@ decision.
 
 ## License
 
-No license is granted. The repository is private and all rights are reserved.
+This project is licensed under the [MIT](LICENSE) license.
