@@ -12,6 +12,9 @@ components:
   formatting: "2025.1"
   justfile: "2025.1"
   readme: "2025.1"
+  readme_style: "standard"
+  readme_has_logo: true
+  readme_badges: ["ci", "containers", "rust", "license"]
 
 # Documented deviations from standard
 deviations:
@@ -23,3 +26,5 @@ deviations:
     reason: "nextest integration profile (.config/nextest.toml) instead of a separate suite"
   - component: pre-commit
     reason: "Not adopted; fmt, clippy and tests run via just check and CI"
+  - component: readme
+    reason: "Private repo: GitHub-native workflow badges and static shields badges instead of github/license and github/stars, which render 'repo not found'"
