@@ -4,3 +4,6 @@ input = "data/raw/reposalmi-vartiosaari.mp4"
 
 [sfm]
 matcher = "exhaustive"
+
+[export]
+videos = true

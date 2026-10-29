@@ -42,6 +42,9 @@ width         = 1920
 height        = 1080
 share_max_mib = 30.0     # share copy size limit, for chat and mail attachments
 
+[export]
+videos = false           # also run the video stage and deliver its videos (ADR-0017)
+
 [gates]
 min_registered_ratio = 0.85
 max_reproj_error_px  = 1.0

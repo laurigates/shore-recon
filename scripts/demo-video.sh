@@ -30,9 +30,17 @@ trap 'rm -rf "$tmp"' EXIT
 inputs=() labels=() durations=()
 side_names=()
 for ds in "$@"; do
+    # The newest export with videos: export.videos = false gives models only
+    # (ADR-0017). Reports from before that switch have no key and had videos.
+    dir=
     # shellcheck disable=SC2012 # fingerprint dirs are hex; newest run wins
-    dir=$(ls -td work/"$ds"/export/*/ 2>/dev/null | head -1 || true)
-    [[ -n $dir ]] || { echo "no export output for $ds; run the pipeline first" >&2; exit 1; }
+    for d in $(ls -td work/"$ds"/export/*/ 2>/dev/null || true); do
+        if jq -e '.config.export.videos != false' "${d}report.json" >/dev/null 2>&1; then
+            dir=$d
+            break
+        fi
+    done
+    [[ -n $dir ]] || { echo "no export with videos for $ds; run with [export] videos = true" >&2; exit 1; }
     side=${ds##*-}
     side_names+=("${side^} side")
     # The processing steps first, as short clips, then the results along every view.

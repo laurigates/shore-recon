@@ -1,3 +1,6 @@
 [dataset]
 name  = "reposalmi-laajasalo"
 input = "data/raw/reposalmi-laajasalo.mp4"
+
+[export]
+videos = true

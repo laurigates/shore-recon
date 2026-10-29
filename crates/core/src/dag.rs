@@ -4,7 +4,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::error::{Error, Result};
 
-/// Default pipeline: `(stage, dependencies)`.
+/// Default pipeline: `(stage, dependencies)`. The video stage is optional:
+/// export depends on it only when `export.videos` is set (ADR-0017).
 pub const PIPELINE: &[(&str, &[&str])] = &[
     ("frames", &[]),
     ("masks", &["frames"]),
@@ -18,7 +19,7 @@ pub const PIPELINE: &[(&str, &[&str])] = &[
     ),
     (
         "export",
-        &["frames", "masks", "sfm", "dense", "splat", "post", "video"],
+        &["frames", "masks", "sfm", "dense", "splat", "post"],
     ),
 ];
 

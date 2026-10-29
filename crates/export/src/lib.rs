@@ -22,20 +22,25 @@ pub const NAME: &str = "export";
 /// Bump when the output changes for the same config and inputs.
 const REVISION: u32 = 1;
 
-/// Every stage, in pipeline order: the report covers them all.
-const DEPS: &[&str] = &["frames", "masks", "sfm", "dense", "splat", "post", "video"];
+/// Every stage that ran, in pipeline order: the report covers them all. The
+/// order with videos is the one before the video stage became optional, so
+/// those exports keep their fingerprints (ADR-0017).
+const DEPS_WITH_VIDEOS: &[&str] = &["frames", "masks", "sfm", "dense", "splat", "post", "video"];
+const DEPS_MODELS: &[&str] = &["frames", "masks", "sfm", "dense", "splat", "post"];
 
 /// The post stage's deliverables.
 pub const POST_FILES: &[&str] = &["model.glb", "splat.ply", "water_plane.json"];
 
 /// `(stage, file)` deliverables, copied under the same name: post's files,
-/// the processing-step clips, then every video the config's views produce.
-pub fn deliverables(config: &Config) -> Vec<(&'static str, String)> {
+/// then with `videos` the processing-step clips and every video the config's
+/// views produce.
+pub fn deliverables(config: &Config, videos: bool) -> Vec<(&'static str, String)> {
     let post = POST_FILES.iter().map(|f| ("post", (*f).to_owned()));
     let video = shoreline_video::step_files()
         .into_iter()
         .chain(shoreline_video::video_files(&config.video))
-        .map(|f| ("video", f));
+        .map(|f| ("video", f))
+        .filter(|_| videos);
     post.chain(video).collect()
 }
 
@@ -44,7 +49,24 @@ pub const REPORT: &str = "report.json";
 /// Metric names.
 pub const DELIVERABLE_MIB: &str = "deliverable_mib";
 
-pub struct Export;
+/// The export stage, with or without the video stage's output
+/// (`export.videos`; build it with [`Export::for_config`]).
+pub struct Export {
+    pub videos: bool,
+}
+
+impl Export {
+    pub const MODELS: Export = Export { videos: false };
+    pub const WITH_VIDEOS: Export = Export { videos: true };
+
+    pub fn for_config(config: &Config) -> &'static Export {
+        if config.export.videos {
+            &Self::WITH_VIDEOS
+        } else {
+            &Self::MODELS
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ToolSummary {
@@ -127,7 +149,11 @@ impl Stage for Export {
     }
 
     fn deps(&self) -> &[&'static str] {
-        DEPS
+        if self.videos {
+            DEPS_WITH_VIDEOS
+        } else {
+            DEPS_MODELS
+        }
     }
 
     fn config(&self, _config: &Config) -> serde_json::Value {
@@ -140,7 +166,7 @@ impl Stage for Export {
 
     fn run(&self, ctx: &RunContext, inputs: &Inputs, out_dir: &Path) -> Result<StageRun> {
         let mut delivered = Vec::new();
-        for (stage, file) in deliverables(&ctx.config) {
+        for (stage, file) in deliverables(&ctx.config, self.videos) {
             let from = inputs[stage].dir.join(&file);
             let to = out_dir.join(&file);
             link_or_copy(&from, &to)?;
@@ -150,7 +176,7 @@ impl Stage for Export {
 
         let mut stages = Vec::new();
         let mut source = None;
-        for &name in DEPS {
+        for &name in self.deps() {
             let (s, src) = summary(name, &inputs[name])?;
             source = source.or(src);
             stages.push(s);
@@ -231,10 +257,15 @@ mod tests {
 
     #[test]
     fn run_gathers_deliverables_and_every_stage_into_the_report() {
+        gather(&Export::WITH_VIDEOS);
+        gather(&Export::MODELS);
+    }
+
+    fn gather(export: &Export) {
         let tmp = tempfile::tempdir().unwrap();
         let mut inputs = Inputs::new();
-        let all = deliverables(&config());
-        for &stage in DEPS {
+        let all = deliverables(&config(), export.videos);
+        for &stage in export.deps() {
             let files: Vec<(&str, &str)> = all
                 .iter()
                 .filter(|(s, _)| *s == stage)
@@ -253,13 +284,22 @@ mod tests {
         let ctx = RunContext::new(config(), tools, &tmp.path().join("work")).unwrap();
         let out = tmp.path().join("out");
         std::fs::create_dir_all(&out).unwrap();
-        let run = Export.run(&ctx, &inputs, &out).unwrap();
+        let run = export.run(&ctx, &inputs, &out).unwrap();
 
         for (_, f) in &all {
             assert!(out.join(f).is_file(), "{f}");
         }
-        assert!(all.iter().any(|(_, f)| f == "mesh-drone.mp4"));
-        assert!(all.iter().any(|(_, f)| f == "step-3-sparse.mp4"));
+        assert_eq!(
+            all.iter().any(|(_, f)| f == "mesh-drone.mp4"),
+            export.videos
+        );
+        assert_eq!(
+            all.iter().any(|(_, f)| f == "step-3-sparse.mp4"),
+            export.videos
+        );
+        if !export.videos {
+            assert_eq!(all.len(), POST_FILES.len());
+        }
         let report: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(out.join(REPORT)).unwrap()).unwrap();
         assert_eq!(report["dataset"], "reposalmi-laajasalo");
@@ -273,7 +313,9 @@ mod tests {
             .collect();
         assert_eq!(
             stages,
-            DEPS.iter()
+            export
+                .deps()
+                .iter()
                 .map(|s| serde_json::json!(s))
                 .collect::<Vec<_>>()
         );
@@ -283,5 +325,20 @@ mod tests {
         assert!(tool.get("argv").is_none() && tool.get("host").is_none());
         assert_eq!(report["deliverables"].as_array().unwrap().len(), all.len());
         assert!(run.metrics[DELIVERABLE_MIB] > 0.0);
+    }
+
+    #[test]
+    fn export_with_videos_keeps_the_previous_dependency_order() {
+        // The fingerprint hashes upstreams in deps() order: existing exports
+        // with videos stay cached only while this order holds.
+        assert_eq!(
+            Export::WITH_VIDEOS.deps(),
+            ["frames", "masks", "sfm", "dense", "splat", "post", "video"]
+        );
+        assert_eq!(Export::MODELS.deps(), &Export::WITH_VIDEOS.deps()[..6]);
+        let mut cfg = config();
+        assert!(Export::for_config(&cfg).videos);
+        cfg.export.videos = false;
+        assert!(!Export::for_config(&cfg).videos);
     }
 }

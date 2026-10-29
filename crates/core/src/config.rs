@@ -29,6 +29,7 @@ pub struct Config {
     pub splat: Splat,
     pub post: Post,
     pub video: Video,
+    pub export: Export,
     pub gates: Gates,
 }
 
@@ -153,6 +154,15 @@ pub struct Video {
     pub height: u32,
     /// Size limit of the share copy, in MiB (for chat and mail attachments).
     pub share_max_mib: f64,
+}
+
+/// What the export stage delivers. Kept apart from `[video]`, whose whole
+/// table is the video stage's fingerprint input (ADR-0017).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Export {
+    /// Run the video stage and deliver its videos; models only when false.
+    pub videos: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -483,6 +493,19 @@ mod tests {
             layer_files(None, &[&dataset, &dataset]),
             [defaults, dataset.clone(), dataset]
         );
+    }
+
+    #[test]
+    fn videos_are_off_by_default_and_on_for_the_repo_datasets() {
+        let lone = Config::layered(
+            None,
+            &[],
+            table("[dataset]\nname = \"x\"\ninput = \"x.mp4\"\n"),
+        )
+        .unwrap();
+        assert!(!lone.export.videos);
+        let repo = Config::load(&repo_configs().join("reposalmi-laajasalo.toml")).unwrap();
+        assert!(repo.export.videos);
     }
 
     #[test]
