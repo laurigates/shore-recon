@@ -98,6 +98,19 @@ pub fn run(
     Ok(results)
 }
 
+/// The stages `run` would run for `targets`, in order.
+pub fn plan(stages: &[&dyn Stage], targets: &[&str]) -> Result<Vec<&'static str>> {
+    let graph: Vec<(&str, &[&str])> = stages.iter().map(|s| (s.name(), s.deps())).collect();
+    let selected = with_dependencies(&graph, targets)?;
+    let order = topo_order(&graph)?;
+    let names: BTreeMap<&str, &'static str> = stages.iter().map(|s| (s.name(), s.name())).collect();
+    Ok(order
+        .into_iter()
+        .filter(|n| selected.contains(n))
+        .map(|n| names[n])
+        .collect())
+}
+
 /// `targets` plus their transitive dependencies; every stage when empty.
 fn with_dependencies<'a>(
     graph: &[(&'a str, &[&'a str])],

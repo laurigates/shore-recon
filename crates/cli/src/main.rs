@@ -48,17 +48,23 @@ enum Command {
     Tools { config: Option<PathBuf> },
 }
 
-/// Stages implemented so far; `run` refuses targets outside this list.
-const STAGES: &[&dyn Stage] = &[
-    &Frames,
-    &Masks,
-    &Sfm,
-    &Dense,
-    &Splat,
-    &VideoStage,
-    &Post,
-    &Export,
-];
+/// The stages for `config`, in pipeline order; `run` refuses targets outside
+/// this list. Export depends on the video stage only with `export.videos`.
+fn stages(config: &Config) -> Vec<&'static dyn Stage> {
+    vec![
+        &Frames,
+        &Masks,
+        &Sfm,
+        &Dense,
+        &Splat,
+        &Post,
+        &VideoStage,
+        Export::for_config(config),
+    ]
+}
+
+/// What `run` builds when no `--stage` is given: the deliverables.
+const DEFAULT_TARGETS: &[&str] = &["export"];
 
 /// Placeholder dataset for commands run without a config.
 const PLACEHOLDER_DATASET: &str = "[dataset]\nname = \"example\"\ninput = \"example.mp4\"\n";
@@ -146,8 +152,11 @@ fn main() -> Result<()> {
             print!("{}", toml::to_string_pretty(&load(config.as_deref())?)?);
         }
         Command::Plan { config } => {
-            load(config.as_deref())?;
-            for (i, stage) in dag::topo_order(dag::PIPELINE)?.iter().enumerate() {
+            let config = load(config.as_deref())?;
+            for (i, stage) in pipeline::plan(&stages(&config), DEFAULT_TARGETS)?
+                .iter()
+                .enumerate()
+            {
                 println!("{} {stage}", i + 1);
             }
         }
@@ -158,11 +167,15 @@ fn main() -> Result<()> {
         Command::Run { config, stages } => {
             let tools = load_tools(Some(&config), cli.tools.as_deref())?;
             let ctx = RunContext::new(load(Some(&config))?, tools, &cli.work)?;
-            let targets: Vec<&str> = stages.iter().map(String::as_str).collect();
-            let implemented: Vec<&str> = STAGES.iter().map(|s| s.name()).collect();
+            let mut targets: Vec<&str> = stages.iter().map(String::as_str).collect();
+            let all = self::stages(&ctx.config);
+            let implemented: Vec<&str> = all.iter().map(|s| s.name()).collect();
             check_targets(&targets, &implemented)?;
+            if targets.is_empty() {
+                targets = DEFAULT_TARGETS.to_vec();
+            }
             check_input(&ctx.config.dataset.input, &std::env::current_dir()?)?;
-            for result in pipeline::run(&ctx, STAGES, &targets, &mut report)? {
+            for result in pipeline::run(&ctx, &all, &targets, &mut report)? {
                 println!("{}", summary(&result));
             }
         }
@@ -173,6 +186,41 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn graph(config: &Config) -> Vec<(&'static str, Vec<&'static str>)> {
+        stages(config)
+            .iter()
+            .map(|s| (s.name(), s.deps().to_vec()))
+            .collect()
+    }
+
+    #[test]
+    fn stages_match_the_pipeline_graph() {
+        let mut config = Config::load(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../configs/reposalmi-laajasalo.toml"),
+        )
+        .unwrap();
+        config.export.videos = false;
+        let mut expected: Vec<_> = dag::PIPELINE
+            .iter()
+            .map(|(n, d)| (*n, d.to_vec()))
+            .collect();
+        assert_eq!(graph(&config), expected);
+        assert_eq!(
+            pipeline::plan(&stages(&config), DEFAULT_TARGETS).unwrap(),
+            ["frames", "masks", "sfm", "dense", "splat", "post", "export"]
+        );
+
+        config.export.videos = true;
+        expected.last_mut().unwrap().1.push("video");
+        assert_eq!(graph(&config), expected);
+        assert_eq!(
+            pipeline::plan(&stages(&config), DEFAULT_TARGETS).unwrap(),
+            [
+                "frames", "masks", "sfm", "dense", "splat", "post", "video", "export"
+            ]
+        );
+    }
 
     #[test]
     fn config_plan_and_tools_take_an_optional_config() {
