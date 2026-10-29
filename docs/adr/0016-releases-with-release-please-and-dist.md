@@ -24,8 +24,9 @@ Decided by the project owner on 2026-10-29:
    (`release-please-config.json`, `.release-please-manifest.json`,
    `.github/workflows/release-please.yml`), as in the owner's other repositories: release type
    `simple`, the version in `[workspace.package]` of `Cargo.toml` marked
-   `# x-release-please-version`, tags without a component (`v0.1.0`). The manifest starts at
-   `0.0.0` so the first release is `0.1.0`.
+   `# x-release-please-version`, tags without a component (`v0.1.0`). `initial-version`
+   `0.1.0` sets the first release: with no release tag yet, release-please ignores the
+   manifest (`0.0.0` before the first release) and would otherwise start at `1.0.0`.
 2. release-please runs with a GitHub App token (`vars.RELEASE_PLEASE_APP_ID`,
    `secrets.RELEASE_PLEASE_PRIVATE_KEY`), so its tag starts `release.yml`. The same workflow
    syncs `Cargo.lock` into the release PR, because CI builds with `--locked`.
