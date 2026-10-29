@@ -1,15 +1,13 @@
-# shoreline-recon tasks. GPU-host recipes need SHORELINE_GPU_HOST (ssh target) and
-# SHORELINE_GPU_ROOT (working directory there), from the environment or a git-ignored .env
-# (see .env.example). Run `just --list` for the recipes.
+# shoreline-recon tasks. Settings come from the environment or a git-ignored .env (see
+# .env.example). Run `just --list` for the recipes. The M0 spike's recipes are in
+# spike/m0/justfile.
 
 set dotenv-load
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
-host := env("SHORELINE_GPU_HOST", "")
-root := env("SHORELINE_GPU_ROOT", "")
-tag := env("SHORELINE_TAG", "manual-2026-10-23")
-# Datasets the batch, demo and bundle recipes cover: names of configs/<name>.toml.
-datasets := if env("SHORELINE_DATASETS", "") == "" { "reposalmi-laajasalo reposalmi-vartiosaari" } else { env("SHORELINE_DATASETS") }
+# Datasets the batch, demo and bundle recipes cover: names of configs/<name>.toml. By default
+# every config there with a [dataset] table whose input exists (scripts/datasets.sh).
+datasets := if env("SHORELINE_DATASETS", "") == "" { `scripts/datasets.sh configs | tr '\n' ' '` } else { env("SHORELINE_DATASETS") }
 
 # List recipes
 default:
@@ -31,24 +29,28 @@ bin := "target/release/shoreline-recon"
 build:
     cargo build --release -p shoreline-recon
 
-# Run one dataset through the implemented stages (SHORELINE_TOOLS selects the host tools file)
+# Run one dataset config (a path ending in .toml, or a name under configs/) through the implemented stages
 [group('pipeline')]
-run dataset *args: build
-    {{bin}} run configs/{{dataset}}.toml {{args}}
+run config *args: build
+    {{bin}} run {{quote(if config =~ '\.toml$' { join(invocation_directory(), config) } else { "configs/" + config + ".toml" })}} {{args}}
 
-# Run every dataset detached, keeping the Mac awake; survives closing the terminal
+# Run every dataset detached, keeping the machine awake; survives closing the terminal
 [group('pipeline')]
-overnight *args: build
+batch *args: build
     @test -n "${SHORELINE_TOOLS:-}" || { echo "SHORELINE_TOOLS is not set (host tools file, e.g. configs/<host>.local.toml); see .env.example" >&2; exit 1; }
+    @test -n "{{datasets}}" || { echo "no datasets: no configs/*.toml with an existing input; set SHORELINE_DATASETS" >&2; exit 1; }
     mkdir -p tmp/runs
-    log=tmp/runs/overnight-$(date +%Y%m%d-%H%M%S).log; \
-      nohup caffeinate -i just _batch {{args}} > "$log" 2>&1 < /dev/null & \
-      echo "started (pid $!); log: $log; follow with: just overnight-status"
+    log=tmp/runs/batch-$(date +%Y%m%d-%H%M%S).log; \
+      keep=(); if command -v caffeinate >/dev/null; then keep=(caffeinate -i); \
+      elif systemd-inhibit --what=idle:sleep --why=probe true >/dev/null 2>&1; then \
+        keep=(systemd-inhibit --what=idle:sleep --why=shoreline-recon); fi; \
+      nohup ${keep[@]+"${keep[@]}"} just _batch {{args}} > "$log" 2>&1 < /dev/null & \
+      echo "started (pid $!); log: $log; follow with: just batch-status"
 
-# Show the latest overnight run's markers and its last lines
+# Show the latest batch run's markers and its last lines
 [group('pipeline')]
-overnight-status:
-    @log=$(ls -t tmp/runs/overnight-*.log 2>/dev/null | head -1); test -n "$log" || { echo "no overnight log yet"; exit 0; }; \
+batch-status:
+    @log=$(ls -t tmp/runs/batch-*.log 2>/dev/null | head -1); test -n "$log" || { echo "no batch log yet"; exit 0; }; \
       echo "$log"; grep -E '^(BATCH|RUN|SERVICE)-' "$log" || true; echo '---'; tail -5 "$log"
 
 [private]
@@ -71,18 +73,12 @@ _batch *args:
       if {{bin}} run configs/$ds.toml {{args}}; then echo "RUN-OK $ds $(date -Iseconds)"
       else echo "RUN-FAIL $ds $(date -Iseconds)"; failed+=("$ds"); fi
     done
-    summary="shoreline-recon overnight: ${#failed[@]} failed${failed:+ (${failed[*]})}"
+    summary="shoreline-recon batch: ${#failed[@]} failed${failed:+ (${failed[*]})}"
     echo "BATCH-END $(date -Iseconds) $summary"
-    if command -v telegram-notify >/dev/null; then telegram-notify "$summary" || true; fi
+    # Optional: a command that takes the summary as its last argument, e.g. a chat notifier.
+    if [ -n "${SHORELINE_NOTIFY_CMD:-}" ]; then bash -c "$SHORELINE_NOTIFY_CMD \"\$1\"" _ "$summary" || true; fi
 
 # ---------- local (this machine) ----------
-
-# Extract 2 fps frames (long edge 3200) and drop blurry ones, per data/raw/<dataset>.mp4
-[group('local')]
-frames threshold="100":
-    for ds in {{datasets}}; do out=work/$ds/frames/{{tag}}; mkdir -p $out/images; \
-      ffmpeg -v error -i data/raw/$ds.mp4 -vf "fps=2,scale=3200:-2:flags=lanczos" -q:v 2 -start_number 1 $out/images/%05d.jpg; \
-      uv run -q --no-project --with opencv-python-headless python -I spike/m0/local/frames_manual.py $out {{threshold}}; done
 
 # Join each dataset's splat and mesh videos (latest export) into the v1 demo, with chapters and a timeline bar
 [group('local')]
@@ -94,95 +90,20 @@ demo out="work/demo/shoreline-recon-v1-demo.mp4":
 bundle:
     scripts/bundle.sh {{datasets}}
 
-# Send a file to the Telegram chat (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID; bots take files up to 50 MB)
+# Send a file with SHORELINE_SHARE_CMD, which takes the file and the caption as its last arguments
 [group('local')]
-telegram-send file caption="":
-    @test -n "${TELEGRAM_BOT_TOKEN:-}" -a -n "${TELEGRAM_CHAT_ID:-}" || { echo "TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set" >&2; exit 1; }
-    @size=$(stat -f %z "{{file}}"); test "$size" -le 50000000 || { echo "{{file}} is $((size / 1000000)) MB; Telegram bots take at most 50 MB" >&2; exit 1; }
-    @kind=document; case "{{file}}" in *.mp4) kind=video;; esac; \
-      curl -sS --max-time 900 -F chat_id="$TELEGRAM_CHAT_ID" -F "$kind=@{{file}}" -F caption="{{caption}}" \
-        "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/send${kind^}" | jq -c '{ok, error_code, description}'
-
-# Build the overlay metadata JSON for each splat video from the run's artefacts
-[group('local')]
-meta:
-    python3 -I spike/m0/local/make_meta.py . work/renders/meta
+share file caption="":
+    @test -n "${SHORELINE_SHARE_CMD:-}" || { echo "SHORELINE_SHARE_CMD is not set (a command taking <file> <caption>); see .env.example" >&2; exit 1; }
+    bash -c "$SHORELINE_SHARE_CMD \"\$@\"" _ {{quote(join(invocation_directory(), file))}} {{quote(caption)}}
 
 # Browse every dataset's export outputs in work/ (splat, mesh, water, raw layers, videos) at http://127.0.0.1:<port>/
 [group('local')]
 viewer port="8765":
     python3 -I scripts/viewer.py --work work --port {{port}} --open
 
-# Make a copy under the 30 MiB attachment limit (1280 px wide, CRF 38, chapters kept)
+# Make a smaller copy for attaching (1280 px wide, CRF 38, chapters kept)
 [group('local')]
 share-copy file:
     ffmpeg -v error -y -i {{file}} -map 0:v -map_chapters 0 -map_metadata 0 -vf "scale=1280:-2:flags=lanczos" \
       -c:v libsvtav1 -preset 6 -crf 38 -g 60 -pix_fmt yuv420p -movflags +faststart {{without_extension(file)}}-1280.mp4
     @ls -l {{without_extension(file)}}-1280.mp4 | awk '{printf "%.1f MiB\n", $5/1048576}'
-
-# ---------- GPU host ----------
-
-[private]
-_gpu:
-    @test -n "{{host}}" || { echo "SHORELINE_GPU_HOST is not set (ssh target of the GPU host); see .env.example" >&2; exit 1; }
-    @test -n "{{root}}" || { echo "SHORELINE_GPU_ROOT is not set (working directory on the GPU host); see .env.example" >&2; exit 1; }
-
-# Run a remote script with the environment the scripts expect (bash, whatever the login shell is)
-[private]
-_remote script *args: _gpu
-    ssh -o BatchMode=yes {{host}} env SHORELINE_GPU_ROOT={{root}} SHORELINE_TAG={{tag}} bash {{root}}/tools/bin/{{script}} {{args}}
-
-# Copy the spike scripts and the kept frames to the GPU host
-[group('gpu')]
-gpu-sync: _gpu
-    ssh -o BatchMode=yes {{host}} mkdir -p {{root}}/tools/bin
-    rsync -a spike/m0/remote/ {{host}}:{{root}}/tools/bin/
-    for ds in {{datasets}}; do ssh -o BatchMode=yes {{host}} mkdir -p {{root}}/work/$ds/frames; \
-      rsync -a work/$ds/frames/{{tag}}/images {{host}}:{{root}}/work/$ds/frames/; done
-
-# One-time bring-up: COLMAP image, Python envs, gsplat build, Brush, ffmpeg (idempotent)
-[group('gpu')]
-gpu-setup: gpu-sync
-    just _remote setup.sh
-
-# Unmasked SfM baseline for every dataset (minutes)
-[group('gpu')]
-gpu-sfm: gpu-sync
-    for ds in {{datasets}}; do just _remote sfm.sh $ds; done
-
-# Start the overnight batch detached (masks, masked SfM, splats, dense); add SHORELINE_STOP_SERVICE=<unit> to free VRAM
-[group('gpu')]
-gpu-overnight: gpu-sync
-    ssh -o BatchMode=yes {{host}} env SHORELINE_GPU_ROOT={{root}} SHORELINE_TAG={{tag}} SHORELINE_STOP_SERVICE=${SHORELINE_STOP_SERVICE:-} \
-      setsid nohup bash {{root}}/tools/bin/overnight.sh '</dev/null' '>/dev/null' '2>&1' '&'
-    @echo "started; follow with: just gpu-status"
-
-# Show the batch's step markers (STEP-OK/FAIL, BRANCH-FAIL, start/end)
-[group('gpu')]
-gpu-status: _gpu
-    ssh -o BatchMode=yes {{host}} "grep -E 'STEP-(OK|FAIL)|BRANCH-FAIL|SERVICE|OVERNIGHT|Registered images|reprojection' {{root}}/overnight-{{tag}}.log || echo 'no log yet'"
-
-# Copy final splats, dense clouds, meshes and logs back (skips databases and depth maps)
-[group('gpu')]
-gpu-fetch: _gpu
-    for ds in {{datasets}}; do for k in masked unmasked; do \
-      mkdir -p work/$ds/splat-$k/{{tag}} work/$ds/dense-$k/{{tag}}; \
-      rsync -a {{host}}:{{root}}/work/$ds/splat-$k/{{tag}}/splat_30000.ply {{host}}:{{root}}/work/$ds/splat-$k/{{tag}}/brush.log work/$ds/splat-$k/{{tag}}/; \
-      rsync -a --include='*.ply' --include='*.json' --include='*.log' --exclude='*' {{host}}:{{root}}/work/$ds/dense-$k/{{tag}}/ work/$ds/dense-$k/{{tag}}/; done; \
-      rsync -a --exclude database.db {{host}}:{{root}}/work/$ds/sfm {{host}}:{{root}}/work/$ds/sfm-masked work/$ds/; done
-
-# Render one looping AV1 video per splat (path: arc | drone) and fetch them
-[group('gpu')]
-gpu-videos path="arc" *args: meta gpu-sync
-    ssh -o BatchMode=yes {{host}} mkdir -p {{root}}/render/meta
-    rsync -a work/renders/meta/ {{host}}:{{root}}/render/meta/
-    just _remote videos.sh {{path}} {{args}}
-    mkdir -p work/renders && rsync -a {{host}}:{{root}}/render/videos/ work/renders/
-
-# Concatenate all renders into one video with a timeline strip and chapters, then fetch it
-[group('gpu')]
-gpu-timeline: meta gpu-sync
-    ssh -o BatchMode=yes {{host}} mkdir -p {{root}}/render/meta
-    rsync -a work/renders/meta/ {{host}}:{{root}}/render/meta/
-    just _remote timeline.sh
-    mkdir -p work/renders && rsync -a {{host}}:{{root}}/render/reposalmi-splats-timeline.mp4 work/renders/

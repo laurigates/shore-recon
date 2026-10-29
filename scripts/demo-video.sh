@@ -6,9 +6,9 @@
 # joined with crossfades, with one MP4 chapter per part
 # and a timeline bar under the picture for seeking (scripts/timeline_bar.py, ADR-0013).
 # Also writes a 1280 px share copy, and fails if either file lacks the bar or a chapter. The share
-# copy of a long demo can exceed chat upload limits (Telegram bots: 50 MB); the script reports
-# the size.
+# copy of a long demo can exceed chat upload limits; the script reports the size.
 # Usage: demo-video.sh <out.mp4> <dataset>...
+# Fonts: SHORELINE_DEMO_FONT and SHORELINE_DEMO_MONO, else the macOS system fonts, else fc-match.
 # Needs ffmpeg with libsvtav1, jq, ImageMagick (`magick`) for the title card, and uv for the bar.
 set -euo pipefail
 
@@ -17,7 +17,13 @@ shift
 (($# > 0)) || { echo "usage: $0 <out.mp4> <dataset>..." >&2; exit 1; }
 
 W=1920 H=1080 FPS=30 TITLE_S=4 FADE=0.5 BAR=80
-FONT=${SHORELINE_DEMO_FONT:-/System/Library/Fonts/Helvetica.ttc}
+font() {
+    if [[ -f $1 ]]; then echo "$1"; return; fi
+    command -v fc-match >/dev/null || { echo "no $2 font: set SHORELINE_DEMO_FONT and SHORELINE_DEMO_MONO" >&2; exit 1; }
+    fc-match -f '%{file}' "$2:spacing=$3"
+}
+FONT=${SHORELINE_DEMO_FONT:-$(font /System/Library/Fonts/Helvetica.ttc sans-serif proportional)}
+MONO=${SHORELINE_DEMO_MONO:-$(font /System/Library/Fonts/Menlo.ttc monospace mono)}
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
@@ -101,7 +107,7 @@ ffmpeg -v error -y "${args[@]}" -f ffmetadata -i "$tmp/chapters.txt" \
     -c:v libsvtav1 -preset 6 -crf 20 -g 60 -pix_fmt yuv420p "$tmp/joined.mp4"
 uv run -q --no-project --with pillow==13.0.0 --with numpy==2.5.4 python -I \
     "$(dirname "$0")/timeline_bar.py" "$tmp/joined.mp4" "$out" --bar "$BAR" \
-    --font "$FONT" --mono "${SHORELINE_DEMO_MONO:-/System/Library/Fonts/Menlo.ttc}"
+    --font "$FONT" --mono "$MONO"
 
 share=${out%.mp4}-share.mp4
 ffmpeg -v error -y -i "$out" -map 0:v -map_chapters 0 -map_metadata 0 -vf "scale=1280:-2:flags=lanczos" \
@@ -120,5 +126,5 @@ done
 for f in "$out" "$share"; do
     printf '%s\t%.1f s\t%.1f MiB\n' "$f" \
         "$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$f")" \
-        "$(echo "$(stat -f %z "$f") / 1048576" | bc -l)"
+        "$(echo "$(wc -c <"$f") / 1048576" | bc -l)"
 done
