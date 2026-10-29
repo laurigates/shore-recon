@@ -6,6 +6,7 @@
       "package-name": "shoreline-recon",
       "changelog-path": "CHANGELOG.md",
       "include-component-in-tag": false,
+      "initial-version": "0.1.0",
       "extra-files": [
         "Cargo.toml"
       ]
