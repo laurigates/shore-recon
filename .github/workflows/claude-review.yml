@@ -1,0 +1,28 @@
+name: Claude Code Review
+
+# Automated PR review through the org's reusable workflow; release-please PRs
+# and bot PRs are skipped there.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  review:
+    uses: laurigates/.github/.github/workflows/reusable-claude-review.yml@main
+    # Explicit grant so the reusable workflow gets the scopes it declares even
+    # though this repo's default workflow permissions are read-only.
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+    with:
+      plugin_marketplaces: |
+        https://github.com/laurigates/claude-plugins.git
+      plugins: |
+        code-quality-plugin@laurigates-claude-plugins
+        testing-plugin@laurigates-claude-plugins
+        rust-plugin@laurigates-claude-plugins
