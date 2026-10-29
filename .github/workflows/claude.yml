@@ -1,0 +1,39 @@
+name: Claude Code
+
+# @claude in issues, PRs and review comments, through the org's reusable workflow.
+# CLAUDE_CODE_OAUTH_TOKEN is provisioned by gitops.
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+  issues:
+    types: [opened, assigned]
+
+jobs:
+  claude:
+    uses: laurigates/.github/.github/workflows/reusable-claude.yml@main
+    # Explicit grant so the reusable workflow gets the scopes it declares even
+    # though this repo's default workflow permissions are read-only.
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+    with:
+      # The org default plus cargo, so Claude can build and test the workspace.
+      allowed_tools: 'Edit,Write,Bash(cargo *),Bash(python *),Bash(python3 *),Bash(just *),Bash(pre-commit *),mcp__github__get_issue,mcp__github__list_issues,mcp__github__search_issues,mcp__github__create_issue,mcp__github__update_issue,mcp__github__add_issue_comment,mcp__github__get_issue_comments,mcp__github__add_sub_issue,mcp__github__list_sub_issues'
+      plugin_marketplaces: |
+        https://github.com/laurigates/claude-plugins.git
+      plugins: |
+        git-plugin@laurigates-claude-plugins
+        rust-plugin@laurigates-claude-plugins
+        testing-plugin@laurigates-claude-plugins
+        code-quality-plugin@laurigates-claude-plugins
+        tools-plugin@laurigates-claude-plugins
