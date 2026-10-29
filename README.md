@@ -142,8 +142,8 @@ timings, result checks and delivery.
 
 #### Batch, demo and viewer
 
-- `just batch` runs every dataset (every `configs/*.toml` with a `[dataset]` table, or
-  `SHORELINE_DATASETS`) detached and logs to `tmp/runs/`; `just batch-status` shows its
+- `just batch` runs every dataset (every `configs/*.toml` with a `[dataset]` table whose
+  input exists, or `SHORELINE_DATASETS`) detached and logs to `tmp/runs/`; `just batch-status` shows its
   progress. It can stop a GPU service on the host for the run (`SHORELINE_STOP_SERVICE`)
   and run a notifier when it ends (`SHORELINE_NOTIFY_CMD`; see `.env.example`).
 - `just demo` joins each dataset's splat and mesh videos for every view (from its

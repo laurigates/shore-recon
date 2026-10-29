@@ -15,7 +15,7 @@ datasets := if env("SHORELINE_DATASETS", "") == "" { "reposalmi-laajasalo reposa
 
 # List recipes
 default:
-    @just -f {{justfile()}} --list
+    @just -f {{quote(justfile())}} --list
 
 # ---------- local (this machine) ----------
 
@@ -54,12 +54,12 @@ gpu-sync: _gpu
 # One-time bring-up: COLMAP image, Python envs, gsplat build, Brush, ffmpeg (idempotent)
 [group('gpu')]
 gpu-setup: gpu-sync
-    just -f {{justfile()}} _remote setup.sh
+    just -f {{quote(justfile())}} _remote setup.sh
 
 # Unmasked SfM baseline for every dataset (minutes)
 [group('gpu')]
 gpu-sfm: gpu-sync
-    for ds in {{datasets}}; do just -f {{justfile()}} _remote sfm.sh $ds; done
+    for ds in {{datasets}}; do just -f {{quote(justfile())}} _remote sfm.sh $ds; done
 
 # Start the overnight batch detached (masks, masked SfM, splats, dense); add SHORELINE_STOP_SERVICE=<unit> to free VRAM
 [group('gpu')]
@@ -87,7 +87,7 @@ gpu-fetch: _gpu
 gpu-videos path="arc" *args: meta gpu-sync
     ssh -o BatchMode=yes {{host}} mkdir -p {{root}}/render/meta
     rsync -a work/renders/meta/ {{host}}:{{root}}/render/meta/
-    just -f {{justfile()}} _remote videos.sh {{path}} {{args}}
+    just -f {{quote(justfile())}} _remote videos.sh {{path}} {{args}}
     mkdir -p work/renders && rsync -a {{host}}:{{root}}/render/videos/ work/renders/
 
 # Concatenate all renders into one video with a timeline strip and chapters, then fetch it
@@ -95,5 +95,5 @@ gpu-videos path="arc" *args: meta gpu-sync
 gpu-timeline: meta gpu-sync
     ssh -o BatchMode=yes {{host}} mkdir -p {{root}}/render/meta
     rsync -a work/renders/meta/ {{host}}:{{root}}/render/meta/
-    just -f {{justfile()}} _remote timeline.sh
+    just -f {{quote(justfile())}} _remote timeline.sh
     mkdir -p work/renders && rsync -a {{host}}:{{root}}/render/reposalmi-splats-timeline.mp4 work/renders/

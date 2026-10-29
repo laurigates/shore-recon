@@ -6,8 +6,8 @@ set dotenv-load
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
 # Datasets the batch, demo and bundle recipes cover: names of configs/<name>.toml. By default
-# every config there with a [dataset] table.
-datasets := if env("SHORELINE_DATASETS", "") == "" { `grep -l '^\[dataset\]' configs/*.toml | sed 's|^configs/||; s|\.toml$||' | tr '\n' ' '` } else { env("SHORELINE_DATASETS") }
+# every config there with a [dataset] table whose input exists (scripts/datasets.sh).
+datasets := if env("SHORELINE_DATASETS", "") == "" { `scripts/datasets.sh configs | tr '\n' ' '` } else { env("SHORELINE_DATASETS") }
 
 # List recipes
 default:
@@ -29,20 +29,21 @@ bin := "target/release/shoreline-recon"
 build:
     cargo build --release -p shoreline-recon
 
-# Run one dataset config (a path, or a name under configs/) through the implemented stages
+# Run one dataset config (a path ending in .toml, or a name under configs/) through the implemented stages
 [group('pipeline')]
 run config *args: build
-    c={{quote(config)}}; [[ -f $c ]] || c=configs/$c.toml; {{bin}} run "$c" {{args}}
+    {{bin}} run {{quote(if config =~ '\.toml$' { join(invocation_directory(), config) } else { "configs/" + config + ".toml" })}} {{args}}
 
 # Run every dataset detached, keeping the machine awake; survives closing the terminal
 [group('pipeline')]
 batch *args: build
     @test -n "${SHORELINE_TOOLS:-}" || { echo "SHORELINE_TOOLS is not set (host tools file, e.g. configs/<host>.local.toml); see .env.example" >&2; exit 1; }
+    @test -n "{{datasets}}" || { echo "no datasets: no configs/*.toml with an existing input; set SHORELINE_DATASETS" >&2; exit 1; }
     mkdir -p tmp/runs
     log=tmp/runs/batch-$(date +%Y%m%d-%H%M%S).log; \
-      if command -v caffeinate >/dev/null; then keep=(caffeinate -i); \
-      elif command -v systemd-inhibit >/dev/null; then keep=(systemd-inhibit --what=idle:sleep --why=shoreline-recon); \
-      else keep=(); fi; \
+      keep=(); if command -v caffeinate >/dev/null; then keep=(caffeinate -i); \
+      elif systemd-inhibit --what=idle:sleep --why=probe true >/dev/null 2>&1; then \
+        keep=(systemd-inhibit --what=idle:sleep --why=shoreline-recon); fi; \
       nohup ${keep[@]+"${keep[@]}"} just _batch {{args}} > "$log" 2>&1 < /dev/null & \
       echo "started (pid $!); log: $log; follow with: just batch-status"
 
@@ -93,7 +94,7 @@ bundle:
 [group('local')]
 share file caption="":
     @test -n "${SHORELINE_SHARE_CMD:-}" || { echo "SHORELINE_SHARE_CMD is not set (a command taking <file> <caption>); see .env.example" >&2; exit 1; }
-    bash -c "$SHORELINE_SHARE_CMD \"\$@\"" _ {{quote(file)}} {{quote(caption)}}
+    bash -c "$SHORELINE_SHARE_CMD \"\$@\"" _ {{quote(join(invocation_directory(), file))}} {{quote(caption)}}
 
 # Browse every dataset's export outputs in work/ (splat, mesh, water, raw layers, videos) at http://127.0.0.1:<port>/
 [group('local')]

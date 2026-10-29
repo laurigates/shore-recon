@@ -17,9 +17,13 @@ shift
 (($# > 0)) || { echo "usage: $0 <out.mp4> <dataset>..." >&2; exit 1; }
 
 W=1920 H=1080 FPS=30 TITLE_S=4 FADE=0.5 BAR=80
-font() { if [[ -f $1 ]]; then echo "$1"; else fc-match -f '%{file}' "$2"; fi; }
-FONT=${SHORELINE_DEMO_FONT:-$(font /System/Library/Fonts/Helvetica.ttc sans-serif)}
-MONO=${SHORELINE_DEMO_MONO:-$(font /System/Library/Fonts/Menlo.ttc monospace)}
+font() {
+    if [[ -f $1 ]]; then echo "$1"; return; fi
+    command -v fc-match >/dev/null || { echo "no $2 font: set SHORELINE_DEMO_FONT and SHORELINE_DEMO_MONO" >&2; exit 1; }
+    fc-match -f '%{file}' "$2:spacing=$3"
+}
+FONT=${SHORELINE_DEMO_FONT:-$(font /System/Library/Fonts/Helvetica.ttc sans-serif proportional)}
+MONO=${SHORELINE_DEMO_MONO:-$(font /System/Library/Fonts/Menlo.ttc monospace mono)}
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
