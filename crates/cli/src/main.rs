@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use shoreline_core::pipeline::{self, Event, StageResult};
-use shoreline_core::{Config, RunContext, Stage, Tools, dag};
+use shoreline_core::{Config, RunContext, Stage, Tools, dag, dirs};
 use shoreline_dense::Dense;
 use shoreline_export::Export;
 use shoreline_frames::Frames;
@@ -17,7 +17,7 @@ use shoreline_video::VideoStage;
 #[derive(Debug, Parser)]
 #[command(version)]
 struct Cli {
-    /// Host tools file; its tables replace those of tools.toml beside the config.
+    /// Host tools file; its tables replace those of every other tools layer.
     #[arg(long, global = true, env = "SHORELINE_TOOLS")]
     tools: Option<PathBuf>,
     /// Root of the stage cache: outputs go to <work>/<dataset>/<stage>/<fingerprint>/.
@@ -37,12 +37,15 @@ enum Command {
         #[arg(long = "stage")]
         stages: Vec<String>,
     },
-    /// Print the resolved config (dataset merged over defaults).
-    Config { config: PathBuf },
+    /// Print the resolved config: built-in defaults, the user's config.toml,
+    /// defaults.toml beside the config, the config. Without a config, the
+    /// defaults with a placeholder dataset.
+    Config { config: Option<PathBuf> },
     /// Print the stage execution order.
-    Plan { config: PathBuf },
-    /// Print the resolved tools (tools.toml beside the config, then --tools).
-    Tools { config: PathBuf },
+    Plan { config: Option<PathBuf> },
+    /// Print the resolved tools: built-in, the user's tools.toml, tools.toml
+    /// beside the config, then --tools.
+    Tools { config: Option<PathBuf> },
 }
 
 /// Stages implemented so far; `run` refuses targets outside this list.
@@ -57,12 +60,24 @@ const STAGES: &[&dyn Stage] = &[
     &Export,
 ];
 
-fn load(path: &Path) -> Result<Config> {
-    Config::load(path).with_context(|| format!("loading {}", path.display()))
+/// Placeholder dataset for commands run without a config.
+const PLACEHOLDER_DATASET: &str = "[dataset]\nname = \"example\"\ninput = \"example.mp4\"\n";
+
+fn load(path: Option<&Path>) -> Result<Config> {
+    let user = dirs::config_dir();
+    match path {
+        Some(path) => Config::layered(user.as_deref(), &[path], toml::Table::new())
+            .with_context(|| format!("loading {}", path.display())),
+        None => Ok(Config::layered(
+            user.as_deref(),
+            &[],
+            PLACEHOLDER_DATASET.parse()?,
+        )?),
+    }
 }
 
-fn load_tools(config: &Path, overlay: Option<&Path>) -> Result<Tools> {
-    Tools::load(config, overlay).with_context(|| format!("loading tools for {}", config.display()))
+fn load_tools(config: Option<&Path>, overlay: Option<&Path>) -> Result<Tools> {
+    Tools::layered(dirs::config_dir().as_deref(), config, overlay).context("loading tools")
 }
 
 /// Refuse targets that are not implemented, telling a planned stage from a typo.
@@ -128,21 +143,21 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Config { config } => {
-            print!("{}", toml::to_string_pretty(&load(&config)?)?);
+            print!("{}", toml::to_string_pretty(&load(config.as_deref())?)?);
         }
         Command::Plan { config } => {
-            load(&config)?;
+            load(config.as_deref())?;
             for (i, stage) in dag::topo_order(dag::PIPELINE)?.iter().enumerate() {
                 println!("{} {stage}", i + 1);
             }
         }
         Command::Tools { config } => {
-            let tools = load_tools(&config, cli.tools.as_deref())?;
+            let tools = load_tools(config.as_deref(), cli.tools.as_deref())?;
             print!("{}", toml::to_string_pretty(&tools)?);
         }
         Command::Run { config, stages } => {
-            let tools = load_tools(&config, cli.tools.as_deref())?;
-            let ctx = RunContext::new(load(&config)?, tools, &cli.work)?;
+            let tools = load_tools(Some(&config), cli.tools.as_deref())?;
+            let ctx = RunContext::new(load(Some(&config))?, tools, &cli.work)?;
             let targets: Vec<&str> = stages.iter().map(String::as_str).collect();
             let implemented: Vec<&str> = STAGES.iter().map(|s| s.name()).collect();
             check_targets(&targets, &implemented)?;
@@ -158,6 +173,21 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_plan_and_tools_take_an_optional_config() {
+        for cmd in ["config", "plan", "tools"] {
+            Cli::try_parse_from(["shoreline-recon", cmd]).unwrap();
+            Cli::try_parse_from(["shoreline-recon", cmd, "c.toml"]).unwrap();
+        }
+        assert!(Cli::try_parse_from(["shoreline-recon", "run"]).is_err());
+    }
+
+    #[test]
+    fn placeholder_dataset_loads_over_the_built_in_defaults() {
+        let cfg = Config::layered(None, &[], PLACEHOLDER_DATASET.parse().unwrap()).unwrap();
+        assert_eq!(cfg.dataset.name, "example");
+    }
 
     #[test]
     fn targets_tell_planned_stages_from_typos() {
