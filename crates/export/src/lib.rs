@@ -143,6 +143,39 @@ fn link_or_copy(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Copy an export's deliverables and `report.json` from `export_dir` into
+/// `out` (created if needed), replacing files of the same name and leaving
+/// any other file alone. Copies, not links, so editing them never touches
+/// the cache. Each file is written to a temporary name, then renamed.
+pub fn copy_out(
+    export_dir: &Path,
+    out: &Path,
+    config: &Config,
+    videos: bool,
+) -> Result<Vec<std::path::PathBuf>> {
+    std::fs::create_dir_all(out).map_err(io_error(out))?;
+    let files = deliverables(config, videos)
+        .into_iter()
+        .map(|(_, f)| f)
+        .chain([REPORT.to_owned()]);
+    let mut copied = Vec::new();
+    for file in files {
+        let plain = Path::new(&file)
+            .file_name()
+            .is_some_and(|n| n == std::ffi::OsStr::new(&file));
+        if !plain {
+            return Err(stage_error(format!("refusing to copy out {file}")));
+        }
+        let from = export_dir.join(&file);
+        let to = out.join(&file);
+        let tmp = out.join(format!(".{file}.tmp"));
+        std::fs::copy(&from, &tmp).map_err(io_error(&from))?;
+        std::fs::rename(&tmp, &to).map_err(io_error(&to))?;
+        copied.push(to);
+    }
+    Ok(copied)
+}
+
 impl Stage for Export {
     fn name(&self) -> &'static str {
         NAME
@@ -340,5 +373,47 @@ mod tests {
         assert!(Export::for_config(&cfg).videos);
         cfg.export.videos = false;
         assert!(!Export::for_config(&cfg).videos);
+    }
+
+    #[test]
+    fn copy_out_copies_deliverables_and_keeps_other_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let export = tmp.path().join("export");
+        std::fs::create_dir_all(&export).unwrap();
+        for f in POST_FILES.iter().chain([&REPORT]) {
+            std::fs::write(export.join(f), "new").unwrap();
+        }
+        let out = tmp.path().join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(out.join("model.glb"), "old").unwrap();
+        std::fs::write(out.join("notes.txt"), "mine").unwrap();
+
+        let copied = copy_out(&export, &out, &config(), false).unwrap();
+        assert_eq!(copied.len(), POST_FILES.len() + 1);
+        assert_eq!(
+            std::fs::read_to_string(out.join("model.glb")).unwrap(),
+            "new"
+        );
+        assert_eq!(
+            std::fs::read_to_string(out.join("notes.txt")).unwrap(),
+            "mine"
+        );
+        assert!(
+            std::fs::read_dir(&out)
+                .unwrap()
+                .all(|e| { !e.unwrap().file_name().to_string_lossy().ends_with(".tmp") })
+        );
+        // A copy, not a hard link: editing it leaves the cache alone.
+        std::fs::write(out.join("splat.ply"), "edited").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(export.join("splat.ply")).unwrap(),
+            "new"
+        );
+    }
+
+    #[test]
+    fn copy_out_fails_on_a_missing_deliverable() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(copy_out(tmp.path(), &tmp.path().join("out"), &config(), true).is_err());
     }
 }

@@ -1,11 +1,11 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use shoreline_core::pipeline::{self, Event, StageResult};
 use shoreline_core::{Config, RunContext, Stage, Tools, dag, dirs};
 use shoreline_dense::Dense;
-use shoreline_export::Export;
+use shoreline_export::{Export, copy_out};
 use shoreline_frames::Frames;
 use shoreline_masks::Masks;
 use shoreline_post::Post;
@@ -14,17 +14,51 @@ use shoreline_splat::Splat;
 use shoreline_video::VideoStage;
 
 /// Water-aware photogrammetry and Gaussian splatting pipeline.
+///
+/// `shoreline-recon <video>` reconstructs one clip into ./<name>-recon/:
+/// the mesh with its water plane, the splat and a report.
 #[derive(Debug, Parser)]
-#[command(version)]
+#[command(version, arg_required_else_help = true)]
 struct Cli {
     /// Host tools file; its tables replace those of every other tools layer.
     #[arg(long, global = true, env = "SHORELINE_TOOLS")]
     tools: Option<PathBuf>,
     /// Root of the stage cache: outputs go to <work>/<dataset>/<stage>/<fingerprint>/.
-    #[arg(long, global = true, env = "SHORELINE_WORK", default_value = "work")]
-    work: PathBuf,
+    /// Default: ./work for subcommands, the user cache directory for a video.
+    #[arg(long, global = true, env = "SHORELINE_WORK")]
+    work: Option<PathBuf>,
+    #[command(flatten)]
+    quick: QuickArgs,
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
+}
+
+/// Reconstruct one video without a dataset config (ADR-0017).
+#[derive(Debug, Args)]
+struct QuickArgs {
+    /// Video to reconstruct.
+    video: Option<PathBuf>,
+    /// Output directory for the deliverables. Default: ./<name>-recon.
+    #[arg(short, long)]
+    out: Option<PathBuf>,
+    /// Dataset name (cache directory and report). Default: the video's file stem.
+    #[arg(long)]
+    name: Option<String>,
+    /// Frames extracted per second of video (frames.fps).
+    #[arg(long)]
+    fps: Option<f64>,
+    /// Splat training steps (splat.steps).
+    #[arg(long)]
+    steps: Option<u32>,
+    /// Feature matcher (sfm.matcher).
+    #[arg(long, value_parser = ["sequential", "exhaustive"])]
+    matcher: Option<String>,
+    /// Also render the showcase and processing-step videos (export.videos).
+    #[arg(long)]
+    videos: bool,
+    /// Partial config (any keys of defaults.toml), merged over the defaults.
+    #[arg(long)]
+    config: Option<PathBuf>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -65,6 +99,109 @@ fn stages(config: &Config) -> Vec<&'static dyn Stage> {
 
 /// What `run` builds when no `--stage` is given: the deliverables.
 const DEFAULT_TARGETS: &[&str] = &["export"];
+
+impl QuickArgs {
+    fn is_set(&self) -> bool {
+        self.video.is_some()
+            || self.out.is_some()
+            || self.name.is_some()
+            || self.fps.is_some()
+            || self.steps.is_some()
+            || self.matcher.is_some()
+            || self.videos
+            || self.config.is_some()
+    }
+}
+
+/// A dataset name from a file stem: a single path component made of letters,
+/// digits, '.', '_' and '-', starting with a letter or digit.
+fn dataset_name(stem: &str) -> String {
+    let name: String = stem
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let name = name.trim_start_matches(|c: char| !c.is_ascii_alphanumeric());
+    if name.is_empty() {
+        "capture".to_owned()
+    } else {
+        name.to_owned()
+    }
+}
+
+/// Command-line settings as a config layer over every file.
+fn overrides(q: &QuickArgs, name: &str, input: &Path) -> Result<toml::Table> {
+    let mut t = toml::Table::new();
+    let mut section = |key: &str, field: &str, value: toml::Value| {
+        t.entry(key)
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+            .as_table_mut()
+            .expect("sections are tables")
+            .insert(field.to_owned(), value);
+    };
+    section("dataset", "name", name.into());
+    let input = input
+        .to_str()
+        .with_context(|| format!("{} is not valid UTF-8", input.display()))?;
+    section("dataset", "input", input.into());
+    if let Some(fps) = q.fps {
+        section("frames", "fps", fps.into());
+    }
+    if let Some(steps) = q.steps {
+        section("splat", "steps", i64::from(steps).into());
+    }
+    if let Some(matcher) = &q.matcher {
+        section("sfm", "matcher", matcher.as_str().into());
+    }
+    if q.videos {
+        section("export", "videos", true.into());
+    }
+    Ok(t)
+}
+
+/// `shoreline-recon <video>`: run to export, then copy the deliverables out.
+fn quick(q: &QuickArgs, video: &Path, tools: Option<&Path>, work: Option<&Path>) -> Result<()> {
+    let input = std::fs::canonicalize(video)
+        .with_context(|| format!("video {} not found", video.display()))?;
+    let stem = input.file_stem().unwrap_or_default().to_string_lossy();
+    let name = q.name.clone().unwrap_or_else(|| dataset_name(&stem));
+    let user = dirs::config_dir();
+    let files: Vec<&Path> = q.config.as_deref().into_iter().collect();
+    let config = Config::layered(user.as_deref(), &files, overrides(q, &name, &input)?)
+        .context("resolving the config")?;
+    let tools =
+        Tools::layered(user.as_deref(), q.config.as_deref(), tools).context("loading tools")?;
+    if config.export.videos && tools.get("render").is_err() {
+        bail!(
+            "--videos needs a [render] tool, and none is configured: add one to the user's \
+             tools.toml or pass --tools (the CUDA render image runs on a remote host)"
+        );
+    }
+    let work = match work {
+        Some(w) => w.to_path_buf(),
+        None => dirs::cache_dir().unwrap_or_else(|| PathBuf::from("work")),
+    };
+    let videos = config.export.videos;
+    let ctx = RunContext::new(config, tools, &work)?;
+    let results = pipeline::run(&ctx, &stages(&ctx.config), DEFAULT_TARGETS, &mut report)?;
+    let export = results
+        .iter()
+        .find(|r| r.stage == shoreline_export::NAME)
+        .context("the pipeline did not run export")?;
+    let out = q
+        .out
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(format!("{name}-recon")));
+    for file in copy_out(&export.dir, &out, &ctx.config, videos)? {
+        println!("{}", file.display());
+    }
+    Ok(())
+}
 
 /// Placeholder dataset for commands run without a config.
 const PLACEHOLDER_DATASET: &str = "[dataset]\nname = \"example\"\ninput = \"example.mp4\"\n";
@@ -147,7 +284,15 @@ fn summary(result: &StageResult) -> String {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    match cli.command {
+    let Some(command) = cli.command else {
+        let video = cli.quick.video.as_deref().context("no video given")?;
+        return quick(&cli.quick, video, cli.tools.as_deref(), cli.work.as_deref());
+    };
+    if cli.quick.is_set() {
+        bail!("a video and its options cannot be combined with a subcommand");
+    }
+    let work = cli.work.unwrap_or_else(|| PathBuf::from("work"));
+    match command {
         Command::Config { config } => {
             print!("{}", toml::to_string_pretty(&load(config.as_deref())?)?);
         }
@@ -166,7 +311,7 @@ fn main() -> Result<()> {
         }
         Command::Run { config, stages } => {
             let tools = load_tools(Some(&config), cli.tools.as_deref())?;
-            let ctx = RunContext::new(load(Some(&config))?, tools, &cli.work)?;
+            let ctx = RunContext::new(load(Some(&config))?, tools, &work)?;
             let mut targets: Vec<&str> = stages.iter().map(String::as_str).collect();
             let all = self::stages(&ctx.config);
             let implemented: Vec<&str> = all.iter().map(|s| s.name()).collect();
@@ -220,6 +365,92 @@ mod tests {
                 "frames", "masks", "sfm", "dense", "splat", "post", "video", "export"
             ]
         );
+    }
+
+    #[test]
+    fn cli_definition_is_consistent() {
+        use clap::CommandFactory;
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn a_video_or_a_subcommand_but_not_both() {
+        let c = Cli::try_parse_from(["shoreline-recon", "clip.mp4"]).unwrap();
+        assert_eq!(c.quick.video.as_deref(), Some(Path::new("clip.mp4")));
+        assert!(c.command.is_none());
+        let c = Cli::try_parse_from([
+            "shoreline-recon",
+            "clip.mp4",
+            "-o",
+            "out",
+            "--name",
+            "pier",
+            "--fps",
+            "3",
+            "--steps",
+            "7000",
+            "--matcher",
+            "exhaustive",
+            "--videos",
+            "--config",
+            "my.toml",
+            "--tools",
+            "host.toml",
+            "--work",
+            "w",
+        ])
+        .unwrap();
+        assert!(c.quick.videos && c.quick.steps == Some(7000));
+        assert_eq!(c.work.as_deref(), Some(Path::new("w")));
+        let c =
+            Cli::try_parse_from(["shoreline-recon", "--tools", "h.toml", "run", "c.toml"]).unwrap();
+        assert!(matches!(c.command, Some(Command::Run { .. })) && c.tools.is_some());
+        assert!(!c.quick.is_set());
+        let c = Cli::try_parse_from(["shoreline-recon", "--fps", "3", "plan"]).unwrap();
+        assert!(c.quick.is_set() && c.command.is_some()); // refused in main
+        assert!(Cli::try_parse_from(["shoreline-recon", "clip.mp4", "--matcher", "x"]).is_err());
+        assert!(Cli::try_parse_from(["shoreline-recon"]).is_err());
+    }
+
+    #[test]
+    fn dataset_names_are_plain_path_components() {
+        assert_eq!(dataset_name("DJI_0849"), "DJI_0849");
+        assert_eq!(dataset_name("my pier (2)"), "my-pier--2-");
+        assert_eq!(dataset_name("..hidden"), "hidden");
+        assert_eq!(dataset_name("äö"), "capture");
+    }
+
+    #[test]
+    fn overrides_become_the_top_config_layer() {
+        let c = Cli::try_parse_from([
+            "shoreline-recon",
+            "clip.mp4",
+            "--fps",
+            "3",
+            "--steps",
+            "7000",
+            "--matcher",
+            "exhaustive",
+            "--videos",
+        ])
+        .unwrap();
+        let t = overrides(&c.quick, "pier", Path::new("/data/clip.mp4")).unwrap();
+        let cfg = Config::layered(None, &[], t).unwrap();
+        assert_eq!(cfg.dataset.name, "pier");
+        assert_eq!(cfg.dataset.input, Path::new("/data/clip.mp4"));
+        assert_eq!(cfg.frames.fps, 3.0);
+        assert_eq!(cfg.splat.steps, 7000);
+        assert_eq!(cfg.sfm.matcher, shoreline_core::config::Matcher::Exhaustive);
+        assert!(cfg.export.videos);
+        let plain = Cli::try_parse_from(["shoreline-recon", "clip.mp4"]).unwrap();
+        let cfg = Config::layered(
+            None,
+            &[],
+            overrides(&plain.quick, "pier", Path::new("/c.mp4")).unwrap(),
+        )
+        .unwrap();
+        assert!(!cfg.export.videos);
+        assert_eq!(cfg.splat.steps, 30000);
     }
 
     #[test]
