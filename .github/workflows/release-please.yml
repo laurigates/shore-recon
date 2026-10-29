@@ -1,0 +1,65 @@
+name: Release Please
+
+# Opens and updates the release PR from conventional commits on main. Merging it
+# tags vX.Y.Z and creates the GitHub Release; the tag starts release.yml (dist),
+# which builds the binaries, uploads them to that release and publishes the
+# Homebrew formula (ADR-0016).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+# Prevent concurrent runs racing on the release-please branch.
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      # A tag or release made with the default GITHUB_TOKEN starts no other
+      # workflow, so release.yml would never run. The GitHub App token's tag
+      # does (App provisioned by gitops for repos flagged release_please = true).
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.RELEASE_PLEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_PLEASE_PRIVATE_KEY }}
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        id: release
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+
+      # release-please bumps `[workspace.package] version` in Cargo.toml but not
+      # Cargo.lock, and CI builds with --locked. Sync the lock into the release
+      # PR. `prs_created` is true on create and update; pushing to the release
+      # branch does not retrigger this workflow (it runs on main only).
+      - name: Check out the release PR branch
+        if: ${{ steps.release.outputs.prs_created == 'true' }}
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ fromJSON(steps.release.outputs.pr).headBranchName }}
+          token: ${{ steps.app-token.outputs.token }}
+      - name: Install Rust
+        if: ${{ steps.release.outputs.prs_created == 'true' }}
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - name: Sync Cargo.lock to the bumped workspace version
+        if: ${{ steps.release.outputs.prs_created == 'true' }}
+        run: |
+          cargo update --workspace
+          if git diff --quiet Cargo.lock; then
+            echo "Cargo.lock already in sync."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add Cargo.lock
+            git commit -m "chore: sync Cargo.lock"
+            git push
+          fi
