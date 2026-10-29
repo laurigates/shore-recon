@@ -40,7 +40,7 @@ step_seconds  = 8.0      # each processing-step clip (frames, masks, sparse, den
 fps           = 30
 width         = 1920
 height        = 1080
-share_max_mib = 30.0     # share copy limit; Telegram bots take 50 MB
+share_max_mib = 30.0     # share copy size limit, for chat and mail attachments
 
 [gates]
 min_registered_ratio = 0.85

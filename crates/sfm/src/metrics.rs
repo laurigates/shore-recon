@@ -156,8 +156,10 @@ mod tests {
         assert!(matches!(&err, Error::Stage { message, .. } if message.contains(REGISTERED_RATIO)));
     }
 
-    /// The spike's masked laajasalo model (`work/`, not committed) against
-    /// COLMAP's own `model_analyzer` output for it.
+    /// A COLMAP run directory (`SHORELINE_TEST_SFM_DIR`: `sparse/0` and the
+    /// `model_analyzer.txt` written for it) against COLMAP's own figures.
+    /// `SHORELINE_TEST_SFM_FRAMES` is the number of input frames (default: the
+    /// registered images, a full registration).
     mod integration {
         use super::*;
 
@@ -169,12 +171,18 @@ mod tests {
         }
 
         #[test]
-        fn spike_model_reproduces_model_analyzer() {
-            let run = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../work/reposalmi-laajasalo/sfm-masked/manual-2026-10-23");
+        fn model_reproduces_model_analyzer() {
+            let run = std::path::PathBuf::from(
+                std::env::var_os("SHORELINE_TEST_SFM_DIR")
+                    .expect("SHORELINE_TEST_SFM_DIR is not set"),
+            );
             let text = std::fs::read_to_string(run.join("model_analyzer.txt")).unwrap();
             let model = Model::read_binary(&run.join("sparse/0")).unwrap();
-            let m = metrics(&model, 121);
+            let frames = match std::env::var("SHORELINE_TEST_SFM_FRAMES") {
+                Ok(n) => n.parse().unwrap(),
+                Err(_) => analyzer_value(&text, "Registered images") as usize,
+            };
+            let m = metrics(&model, frames);
             let close = |a: f64, b: f64| (a - b).abs() < 5e-7;
             assert_eq!(
                 m[REGISTERED_IMAGES],

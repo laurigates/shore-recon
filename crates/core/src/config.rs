@@ -146,7 +146,7 @@ pub struct Video {
     pub fps: u32,
     pub width: u32,
     pub height: u32,
-    /// Size limit of the share copy, in MiB (Telegram's bot upload limit is 50 MB).
+    /// Size limit of the share copy, in MiB (for chat and mail attachments).
     pub share_max_mib: f64,
 }
 
