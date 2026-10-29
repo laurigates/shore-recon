@@ -24,7 +24,9 @@ splat come out.
 ## Quick start
 
 ```sh
-brew install laurigates/tap/shoreline-recon
+brew tap laurigates/tap
+brew trust laurigates/tap      # Homebrew loads third-party taps only once trusted
+brew install shoreline-recon
 shoreline-recon pier.mp4
 ```
 
