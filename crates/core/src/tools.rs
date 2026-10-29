@@ -1,9 +1,10 @@
 //! External tool execution (the `ToolRunner`).
 //!
 //! How a tool runs is machine configuration, not dataset configuration
-//! (ADR-0003). `tools.toml` beside the dataset config holds one table per
-//! tool; an override file (`--tools` / `SHORELINE_TOOLS`) replaces whole tool
-//! tables. Containers bind-mount each listed directory at the same path, so
+//! (ADR-0003). One table per tool, from these layers, each replacing whole
+//! tool tables of the ones below (ADR-0017): the built-in `tools.toml`, the
+//! user's `tools.toml`, `tools.toml` beside the dataset config, and an
+//! override file (`--tools` / `SHORELINE_TOOLS`). Containers bind-mount each listed directory at the same path, so
 //! tool arguments need no path translation.
 
 use std::collections::BTreeMap;
@@ -21,6 +22,8 @@ use crate::config::read_table;
 use crate::error::{Error, Result};
 
 pub const TOOLS_FILE: &str = "tools.toml";
+/// `configs/tools.toml`, built in so an installed binary needs no checkout.
+pub const EMBEDDED_TOOLS: &str = include_str!("../../../configs/tools.toml");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -214,6 +217,35 @@ impl Tools {
         Self::from_table(table)
     }
 
+    /// Every layer: built-in `tools.toml`, `user_dir/tools.toml`,
+    /// `tools.toml` beside `config`, then `overlay`. Missing optional files
+    /// are skipped; a missing overlay is an error.
+    pub fn layered(
+        user_dir: Option<&Path>,
+        config: Option<&Path>,
+        overlay: Option<&Path>,
+    ) -> Result<Self> {
+        let mut table = EMBEDDED_TOOLS
+            .parse::<Table>()
+            .map_err(|source| Error::Parse {
+                path: PathBuf::from("<built-in tools.toml>"),
+                source: Box::new(source),
+            })?;
+        let user = user_dir.map(|d| d.join(TOOLS_FILE));
+        let beside = config.map(|c| c.parent().unwrap_or(Path::new(".")).join(TOOLS_FILE));
+        for file in [user, beside].into_iter().flatten().filter(|f| f.is_file()) {
+            table.extend(read_table(&file)?);
+        }
+        if let Some(overlay) = overlay {
+            table.extend(read_table(overlay)?);
+        }
+        Self::from_table(table)
+    }
+
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.0.keys().map(String::as_str)
+    }
+
     pub fn from_table(table: Table) -> Result<Self> {
         let tools: Self = Value::Table(table)
             .try_into()
@@ -227,7 +259,8 @@ impl Tools {
     pub fn get(&self, name: &str) -> Result<Tool> {
         let spec = self.0.get(name).ok_or_else(|| {
             Error::Tools(format!(
-                "no [{name}] table in {TOOLS_FILE} beside the dataset config or in --tools"
+                "no [{name}] table in the built-in {TOOLS_FILE}, the user's {TOOLS_FILE}, \
+                 {TOOLS_FILE} beside the dataset config or --tools"
             ))
         })?;
         Ok(Tool {
@@ -1020,6 +1053,43 @@ mod tests {
             Tools::load(&config, Some(&missing)),
             Err(Error::Io { path, .. }) if path == missing
         ));
+    }
+
+    #[test]
+    fn layered_tools_replace_whole_tables_lowest_first() {
+        let t = Tools::layered(None, None, None).unwrap();
+        assert_eq!(t.get("ffmpeg").unwrap().spec.runtime, Runtime::Native);
+        assert!(t.names().any(|n| n == "segment"));
+
+        let user = tempfile::tempdir().unwrap();
+        std::fs::write(
+            user.path().join(TOOLS_FILE),
+            "[segment]\nruntime = \"native\"\nprogram = \"seg\"\n",
+        )
+        .unwrap();
+        let data = tempfile::tempdir().unwrap();
+        std::fs::write(
+            data.path().join(TOOLS_FILE),
+            "[ffmpeg]\nruntime = \"native\"\nprogram = \"ff-beside\"\n",
+        )
+        .unwrap();
+        let overlay = data.path().join("host.toml");
+        std::fs::write(
+            &overlay,
+            "[ffmpeg]\nruntime = \"native\"\nprogram = \"ff-host\"\n",
+        )
+        .unwrap();
+        let config = data.path().join("x.toml");
+
+        let t = Tools::layered(Some(user.path()), Some(&config), None).unwrap();
+        let segment = t.get("segment").unwrap().spec;
+        // The user's table replaced the built-in one: no image inherited.
+        assert_eq!((segment.program.as_str(), segment.image), ("seg", None));
+        assert_eq!(t.get("ffmpeg").unwrap().spec.program, "ff-beside");
+        let t = Tools::layered(Some(user.path()), Some(&config), Some(&overlay)).unwrap();
+        assert_eq!(t.get("ffmpeg").unwrap().spec.program, "ff-host");
+        let err = t.get("colmap").unwrap_err().to_string();
+        assert!(err.contains("--tools") && err.contains("user's"), "{err}");
     }
 
     #[test]

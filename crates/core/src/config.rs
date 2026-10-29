@@ -1,8 +1,9 @@
 //! Run configuration.
 //!
-//! A dataset config is deep-merged over `defaults.toml` from the same
-//! directory, when present. Tables merge recursively; any other value in
-//! the dataset file replaces the default.
+//! Layers, each deep-merged over the previous one (ADR-0017): the defaults
+//! built into the binary, the user's `config.toml`, `defaults.toml` beside a
+//! dataset config, the dataset config itself, then command-line overrides.
+//! Tables merge recursively; any other value replaces the one below it.
 
 use std::path::{Path, PathBuf};
 
@@ -12,6 +13,10 @@ use toml::{Table, Value};
 use crate::error::{Error, Result};
 
 pub const DEFAULTS_FILE: &str = "defaults.toml";
+/// The user's config layer, in [`crate::dirs::config_dir`].
+pub const USER_CONFIG_FILE: &str = "config.toml";
+/// `configs/defaults.toml`, built in so an installed binary needs no checkout.
+pub const EMBEDDED_DEFAULTS: &str = include_str!("../../../configs/defaults.toml");
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -160,18 +165,20 @@ pub struct Gates {
 }
 
 impl Config {
-    /// Load a dataset config, merged over `defaults.toml` beside it.
+    /// Load a dataset config over the built-in defaults and `defaults.toml`
+    /// beside it. Reads nothing from the user's directories.
     pub fn load(path: &Path) -> Result<Self> {
-        let mut table = read_table(path)?;
-        let defaults = path
-            .parent()
-            .map(|dir| dir.join(DEFAULTS_FILE))
-            .filter(|p| p.is_file() && !same_file(p, path));
-        if let Some(defaults) = defaults {
-            let mut base = read_table(&defaults)?;
-            merge(&mut base, table);
-            table = base;
+        Self::layered(None, &[path], Table::new())
+    }
+
+    /// Every layer: built-in defaults, `user_dir/config.toml`, then for each
+    /// file `defaults.toml` beside it and the file, then `overrides`.
+    pub fn layered(user_dir: Option<&Path>, files: &[&Path], overrides: Table) -> Result<Self> {
+        let mut table = embedded_defaults()?;
+        for layer in layer_files(user_dir, files) {
+            merge(&mut table, read_table(&layer)?);
         }
+        merge(&mut table, overrides);
         Self::from_table(table)
     }
 
@@ -283,6 +290,36 @@ impl Config {
     }
 }
 
+pub fn embedded_defaults() -> Result<Table> {
+    EMBEDDED_DEFAULTS
+        .parse::<Table>()
+        .map_err(|source| Error::Parse {
+            path: PathBuf::from("<built-in defaults.toml>"),
+            source: Box::new(source),
+        })
+}
+
+/// The config files [`Config::layered`] reads, lowest first; missing optional
+/// files (the user layer, a beside `defaults.toml`) are skipped.
+pub fn layer_files(user_dir: Option<&Path>, files: &[&Path]) -> Vec<PathBuf> {
+    let mut layers: Vec<PathBuf> = user_dir
+        .map(|d| d.join(USER_CONFIG_FILE))
+        .filter(|p| p.is_file())
+        .into_iter()
+        .collect();
+    for file in files {
+        let beside = file
+            .parent()
+            .map(|dir| dir.join(DEFAULTS_FILE))
+            .filter(|p| p.is_file() && !same_file(p, file));
+        if let Some(beside) = beside.filter(|b| !layers.iter().any(|l| same_file(l, b))) {
+            layers.push(beside);
+        }
+        layers.push(file.to_path_buf());
+    }
+    layers
+}
+
 /// A single, plain path component: no separators, not `.` or `..`.
 fn is_path_component(name: &str) -> bool {
     name.starts_with(|c: char| c.is_ascii_alphanumeric())
@@ -381,6 +418,71 @@ mod tests {
             defaults["masks"]["dilate_px"].as_integer().unwrap()
         );
         assert_eq!(cfg.sfm.matcher, Matcher::Exhaustive);
+    }
+
+    #[test]
+    fn embedded_defaults_are_the_repo_defaults() {
+        assert_eq!(
+            embedded_defaults().unwrap(),
+            read_table(&repo_configs().join(DEFAULTS_FILE)).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_lone_dataset_file_loads_over_the_built_in_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("x.toml");
+        std::fs::write(&file, "[dataset]\nname = \"x\"\ninput = \"x.mp4\"\n").unwrap();
+        let cfg = Config::load(&file).unwrap();
+        assert_eq!(cfg.dataset.name, "x");
+        assert_eq!(cfg.sfm.max_features, 16384);
+    }
+
+    #[test]
+    fn layers_apply_lowest_first() {
+        let user = tempfile::tempdir().unwrap();
+        std::fs::write(
+            user.path().join(USER_CONFIG_FILE),
+            "[splat]\nsteps = 1\n[frames]\nfps = 1.0\n",
+        )
+        .unwrap();
+        let data = tempfile::tempdir().unwrap();
+        std::fs::write(data.path().join(DEFAULTS_FILE), "[splat]\nsteps = 2\n").unwrap();
+        let file = data.path().join("x.toml");
+        std::fs::write(
+            &file,
+            "[dataset]\nname = \"x\"\ninput = \"x.mp4\"\n[sfm]\nmax_features = 3\n",
+        )
+        .unwrap();
+        let cfg = Config::layered(
+            Some(user.path()),
+            &[&file],
+            table("[sfm]\nmax_features = 4\n"),
+        )
+        .unwrap();
+        assert_eq!(cfg.frames.fps, 1.0); // user over built-in
+        assert_eq!(cfg.splat.steps, 2); // beside defaults over user
+        assert_eq!(cfg.sfm.max_features, 4); // overrides over the file
+        assert_eq!(cfg.masks.dilate_px, 8); // built-in
+    }
+
+    #[test]
+    fn layer_files_skip_missing_and_repeated_defaults() {
+        let dir = repo_configs();
+        let defaults = dir.join(DEFAULTS_FILE);
+        let dataset = dir.join("reposalmi-laajasalo.toml");
+        assert_eq!(
+            layer_files(Some(Path::new("/nonexistent")), &[&dataset]),
+            [defaults.clone(), dataset.clone()]
+        );
+        assert_eq!(
+            layer_files(None, &[&defaults]),
+            std::slice::from_ref(&defaults)
+        );
+        assert_eq!(
+            layer_files(None, &[&dataset, &dataset]),
+            [defaults, dataset.clone(), dataset]
+        );
     }
 
     #[test]
