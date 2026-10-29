@@ -15,11 +15,10 @@ components:
   readme_style: "standard"
   readme_has_logo: true
   readme_badges: ["ci", "containers", "rust", "license", "stars"]
+  release-please: "2025.1"
 
 # Documented deviations from standard
 deviations:
-  - component: release-please
-    reason: "Private workspace with publish = false; nothing is released"
   - component: container
     reason: "Four tool images built by containers.yml (ADR-0006, ADR-0011), not one app image"
   - component: integration-tests

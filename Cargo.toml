@@ -3,10 +3,12 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.0" # x-release-please-version
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
+repository = "https://github.com/laurigates/shore-recon"
+homepage = "https://github.com/laurigates/shore-recon"
 publish = false
 
 [workspace.dependencies]
@@ -39,3 +41,8 @@ unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
+
+# The profile that dist builds release artifacts with
+[profile.dist]
+inherits = "release"
+lto = "thin"

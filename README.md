@@ -92,6 +92,18 @@ Decisions: [docs/adr/](docs/adr/).
 
 ### Installation
 
+Release binaries for macOS (Apple Silicon) and Linux (x86_64) are on the
+[releases page](https://github.com/laurigates/shore-recon/releases), with a shell
+installer and a Homebrew formula
+([ADR-0016](docs/adr/0016-releases-with-release-please-and-dist.md)):
+
+```sh
+brew install laurigates/tap/shoreline-recon
+```
+
+The binary still reads `defaults.toml` and `tools.toml` from beside the dataset
+config, so it runs against a checkout's `configs/`. From source:
+
 ```sh
 git clone https://github.com/laurigates/shore-recon.git
 cd shore-recon
