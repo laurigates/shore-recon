@@ -3,7 +3,7 @@ name: process-capture
 description: Run a new shoreline video through the whole pipeline to the v1 deliverables — config, GPU batch, checks, demo video and download bundle. Use when given a new drone/phone clip of a pier, shore or waterfront to reconstruct, or asked to repeat the Reposalmi process on other footage.
 allowed-tools: Bash, Read, Edit, Write
 created: 2026-10-26
-modified: 2026-10-26
+modified: 2026-10-29
 reviewed: 2026-10-26
 ---
 
@@ -37,9 +37,9 @@ ignore), `[video] views` and `step_seconds`.
 ## 3. Run
 
 ```sh
-export SHORELINE_DATASETS="<name> [<name2> ...]"          # or set it in .env
-SHORELINE_TOOLS=configs/<host>.local.toml just overnight   # detached; logs in tmp/runs/
-just overnight-status
+export SHORELINE_DATASETS="<name> [<name2> ...]"       # optional; default: every dataset config
+SHORELINE_TOOLS=configs/<host>.local.toml just batch   # detached; logs in tmp/runs/
+just batch-status
 ```
 
 `SHORELINE_GPU_HOST` (and `SHORELINE_STOP_SERVICE` to free VRAM, confirmed with the user) as in
@@ -76,8 +76,8 @@ Every stage caches by fingerprint (ADR-0004): a rerun only redoes what changed.
 ```sh
 SHORELINE_DEMO_PLACE="<Pier, City>" SHORELINE_DEMO_CAPTURED="drone capture <date>" just demo
 SHORELINE_DEMO_PLACE="<Pier, City>" SHORELINE_DEMO_CAPTURED="drone capture <date>" just bundle
-just telegram-send work/demo/shoreline-recon-v1-demo-share.mp4 "<caption>"
-just telegram-send work/bundle/<name>.zip "<caption>"
+just share work/demo/shoreline-recon-v1-demo-share.mp4 "<caption>"   # SHORELINE_SHARE_CMD
+just share work/bundle/<name>.zip "<caption>"
 ```
 
 - `just demo` (ADR-0013): title, then per dataset six step clips and the splat and mesh along
@@ -86,7 +86,7 @@ just telegram-send work/bundle/<name>.zip "<caption>"
   PLY; `scripts/spz.py` fails the bundle if its round trip passes the quantisation limits;
   ADR-0014),
   `water_plane.json`, `report.json` and a README.
-- Size limits: `SendUserFile` 30 MiB, Telegram bots 50 MB (`just telegram-send` refuses larger).
+- Size limits: `SendUserFile` 30 MiB; the share command's channel may have its own limit.
   The full 1920 px demo of two datasets is ~150 MB; its 1280 px share copy is ~46 MiB. For the
   chat panel, re-encode smaller (`-vf scale=960:-2 -crf 44`, ~20 MiB).
 

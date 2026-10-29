@@ -27,7 +27,7 @@ for ds in "$@"; do
     gauss=$(jq -r '.stages[] | select(.stage=="post") | .metrics.gaussians' "${E}report.json")
     cat >"$out/README.txt" <<EOF
 shoreline-recon v1: $ds${SHORELINE_DEMO_PLACE:+ ($SHORELINE_DEMO_PLACE)}
-${SHORELINE_DEMO_CAPTURED:+${SHORELINE_DEMO_CAPTURED^}. }Pipeline commit $commit (github.com/laurigates/data-processing),
+${SHORELINE_DEMO_CAPTURED:+${SHORELINE_DEMO_CAPTURED^}. }Pipeline commit $commit (github.com/laurigates/shore-recon),
 export $(basename "$E").
 
 mesh/model.glb
@@ -56,5 +56,5 @@ report.json
 Units are the reconstruction's own (COLMAP), not metres.
 EOF
     (cd work/bundle && zip -q -r -9 "$ds.zip" "$ds")
-    printf '%s\t%.1f MB\n' "work/bundle/$ds.zip" "$(echo "$(stat -f %z "work/bundle/$ds.zip") / 1000000" | bc -l)"
+    printf '%s\t%.1f MB\n' "work/bundle/$ds.zip" "$(echo "$(wc -c <"work/bundle/$ds.zip") / 1000000" | bc -l)"
 done

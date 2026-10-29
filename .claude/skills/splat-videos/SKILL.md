@@ -3,7 +3,7 @@ name: splat-videos
 description: The pipeline's showcase and processing-step videos — which clips the video stage renders (splat/mesh x arc/drone, six step clips), how to change views or framing, how render_video's camera paths work, and checking renders. Use when asked for splat or mesh videos, orbit/flythrough renders, step-by-step clips, or a different camera path.
 allowed-tools: Bash, Read
 created: 2026-10-24
-modified: 2026-10-26
+modified: 2026-10-29
 reviewed: 2026-10-26
 ---
 
@@ -65,5 +65,5 @@ needs `libOpenGL.so.0` + `libEGL.so.1` (the GPU rule has why).
 - The splat's drone view shows bright artefacts at the frame edges where few training views
   reached; the culled splat removes floaters over water, not unconstrained background.
 - A new render image means a ~15 min SIF pull on the first run that uses it.
-- The M0 spike's `just gpu-videos` / `gpu-timeline` recipes render the spike's splats, not the
+- The M0 spike's `gpu-videos` / `gpu-timeline` recipes (`spike/m0/justfile`) render the spike's splats, not the
   pipeline's; prefer the video stage.

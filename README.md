@@ -40,7 +40,7 @@ Decisions: [docs/adr/](docs/adr/).
   [ADR-0009](docs/adr/0009-remote-tools-over-ssh.md)).
 - **Review and delivery tooling** - A local web viewer for every export, a joined
   demo video with chapters and a seek bar, and a per-dataset download bundle.
-- **Unattended batches** - `just overnight` runs every dataset detached, survives
+- **Unattended batches** - `just batch` runs every dataset detached, survives
   closing the terminal, and can stop a GPU service on the host for the run.
 
 ## Tech Stack
@@ -78,7 +78,7 @@ Decisions: [docs/adr/](docs/adr/).
 ### Prerequisites
 
 - macOS on Apple Silicon for the local stages: the segmentation image is
-  `linux/arm64`, and `just overnight` keeps the Mac awake with `caffeinate`
+  `linux/arm64`, and `just batch` keeps the Mac awake with `caffeinate`
 - [Rust](https://rustup.rs) via rustup; `rust-toolchain.toml` pins 1.99.1, which
   rustup selects inside the repository
 - [just](https://github.com/casey/just) and [cargo-nextest](https://nexte.st)
@@ -95,7 +95,7 @@ Decisions: [docs/adr/](docs/adr/).
 ```sh
 git clone https://github.com/laurigates/shore-recon.git
 cd shore-recon
-cp .env.example .env   # SHORELINE_TOOLS, SHORELINE_GPU_HOST, SHORELINE_GPU_ROOT
+cp .env.example .env   # SHORELINE_TOOLS and optional settings
 just build
 ```
 
@@ -135,15 +135,17 @@ The v1 deliverables end up in `work/<dataset>/export/<fingerprint>/`:
 #### Processing a new capture
 
 Copy the clip to `data/raw/<name>.mp4`, write `configs/<name>.toml` (`[dataset] name`
-and `input`), set `SHORELINE_DATASETS`, then `just overnight`, `just demo` and
+and `input`), then `just batch`, `just demo` and
 `just bundle`. The `process-capture` project skill
 (`.claude/skills/process-capture/SKILL.md`) has the whole runbook: footage checks,
 timings, result checks and delivery.
 
 #### Batch, demo and viewer
 
-- `just overnight` runs every dataset detached and logs to `tmp/runs/`. It can stop a
-  GPU service on the host for the run (`SHORELINE_STOP_SERVICE`; see `.env.example`).
+- `just batch` runs every dataset (every `configs/*.toml` with a `[dataset]` table, or
+  `SHORELINE_DATASETS`) detached and logs to `tmp/runs/`; `just batch-status` shows its
+  progress. It can stop a GPU service on the host for the run (`SHORELINE_STOP_SERVICE`)
+  and run a notifier when it ends (`SHORELINE_NOTIFY_CMD`; see `.env.example`).
 - `just demo` joins each dataset's splat and mesh videos for every view (from its
   latest export) behind a title card into `work/demo/shoreline-recon-v1-demo.mp4`,
   with a chapter per part, a timeline bar under the picture for seeking, and a share
@@ -170,7 +172,7 @@ shore-recon/
 ├── containers/       # Containerfiles for the tool images, pinned versions
 ├── docs/             # kickoff, ADRs
 ├── scripts/          # demo video, bundle, SPZ conversion, export viewer
-├── spike/m0/         # M0 spike scripts, driven by the [gpu] just recipes
+├── spike/m0/         # M0 spike scripts and their justfile (just -f spike/m0/justfile)
 ├── tests/fixtures/   # frame and mask fixtures
 ├── justfile
 └── rust-toolchain.toml
