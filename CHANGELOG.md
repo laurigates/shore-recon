@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.0](https://github.com/laurigates/shore-recon/compare/v0.1.0...v0.2.0) (2026-10-29)
+
+
+### Features
+
+* **cli:** shoreline-recon &lt;video&gt; builds the models in one command ([fbc3ab8](https://github.com/laurigates/shore-recon/commit/fbc3ab8c47d6173b62e8dc30f16cf09580e6aac4))
+* **core:** built-in defaults and user config layers ([bd0633f](https://github.com/laurigates/shore-recon/commit/bd0633f95c4869aed6a91c412ebd8742b0c061eb))
+* make the video stage optional with [export] videos ([9497231](https://github.com/laurigates/shore-recon/commit/94972316b8a35bd477bfb2b62ab89d47c27eae5a))
+
 ## 0.1.0 (2026-10-29)
 
 
