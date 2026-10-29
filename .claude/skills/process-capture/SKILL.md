@@ -10,7 +10,7 @@ reviewed: 2026-10-26
 # Processing a new capture
 
 The pipeline turns one video into a water-masked splat, a mesh with a water plane, step-by-step
-and final videos, a demo and a download bundle. Stages and decisions: README § Status and
+and final videos, a demo and a download bundle. Stages and decisions: `docs/pipeline.md` and
 `docs/adr/`. GPU host setup and image pins: `.claude/rules/remote-gpu-host.md`.
 
 ## 1. Before running: is the footage usable?
