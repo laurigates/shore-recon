@@ -288,8 +288,9 @@ mod tests {
     }
 
     #[test]
-    fn vartiosaari_matches_exhaustively_and_cpu_tools_disable_the_gpu() {
-        let config = repo_config("reposalmi-vartiosaari");
+    fn exhaustive_matcher_and_cpu_tools_disable_the_gpu() {
+        let mut config = repo_config("reposalmi-laajasalo");
+        config.sfm.matcher = Matcher::Exhaustive;
         let steps = steps(&config.sfm, &paths(), false);
         assert_eq!(steps[1].0, "exhaustive_matcher");
         assert_eq!(strings(&steps[1].1).last().unwrap(), "0");
