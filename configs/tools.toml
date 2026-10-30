@@ -19,12 +19,12 @@
 runtime = "native"
 program = "ffmpeg"
 
-# OneFormer ADE20K Swin-L, CPU, linux/arm64 (ADR-0006): the image the containers
-# workflow pushed from main. Public: pulling needs no login.
+# OneFormer ADE20K Swin-L, CPU, linux/arm64 + linux/amd64 index (ADR-0006): the image the
+# containers workflow pushed from main. Public: pulling needs no login.
 [segment]
 runtime = "docker"
 program = "segment"
-image   = "ghcr.io/laurigates/shoreline-segmentation@sha256:ea0bab1bc4b964e0ce4cdc51968f09a2d5a1929be6b3e69fba93449c85385f6d"
+image   = "ghcr.io/laurigates/shoreline-segmentation@sha256:14d626f8194211d47d300547ada57b8593eaa635391ab09bd1c92db90af411b9"
 
 # The local tool profile (ADR-0019): every stage but the videos runs on this
 # machine without a GPU host. A host file with [colmap], [brush] and [openmvs]
