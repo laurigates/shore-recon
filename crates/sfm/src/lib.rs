@@ -209,7 +209,13 @@ impl Stage for Sfm {
         }
     }
 
-    fn run(&self, ctx: &RunContext, inputs: &Inputs, out_dir: &Path) -> Result<StageRun> {
+    fn run(
+        &self,
+        ctx: &RunContext,
+        inputs: &Inputs,
+        out_dir: &Path,
+        _on_event: &mut dyn FnMut(shoreline_core::pipeline::Event<'_>),
+    ) -> Result<StageRun> {
         let paths = Paths {
             images: inputs[FRAMES].dir.join("images"),
             masks: inputs[MASKS].dir.join("masks"),

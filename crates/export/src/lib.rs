@@ -197,7 +197,13 @@ impl Stage for Export {
         Ok(format!("{NAME}/{REVISION}"))
     }
 
-    fn run(&self, ctx: &RunContext, inputs: &Inputs, out_dir: &Path) -> Result<StageRun> {
+    fn run(
+        &self,
+        ctx: &RunContext,
+        inputs: &Inputs,
+        out_dir: &Path,
+        _on_event: &mut dyn FnMut(shoreline_core::pipeline::Event<'_>),
+    ) -> Result<StageRun> {
         let mut delivered = Vec::new();
         for (stage, file) in deliverables(&ctx.config, self.videos) {
             let from = inputs[stage].dir.join(&file);
@@ -318,7 +324,7 @@ mod tests {
         let ctx = RunContext::new(config(), tools, &tmp.path().join("work")).unwrap();
         let out = tmp.path().join("out");
         std::fs::create_dir_all(&out).unwrap();
-        let run = export.run(&ctx, &inputs, &out).unwrap();
+        let run = export.run(&ctx, &inputs, &out, &mut |_| {}).unwrap();
 
         for (_, f) in &all {
             assert!(out.join(f).is_file(), "{f}");

@@ -85,7 +85,13 @@ impl Stage for Splat {
         vec![undistort::LOG.to_owned(), BRUSH.to_owned()]
     }
 
-    fn run(&self, ctx: &RunContext, inputs: &Inputs, out_dir: &Path) -> Result<StageRun> {
+    fn run(
+        &self,
+        ctx: &RunContext,
+        inputs: &Inputs,
+        out_dir: &Path,
+        _on_event: &mut dyn FnMut(shoreline_core::pipeline::Event<'_>),
+    ) -> Result<StageRun> {
         let images = inputs[FRAMES].dir.join("images");
         let masks = inputs[MASKS].dir.join("masks");
         let sparse = inputs[SFM].dir.join("sparse/0");

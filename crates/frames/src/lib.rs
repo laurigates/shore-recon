@@ -56,7 +56,13 @@ impl Stage for Frames {
         vec![LOG.to_owned()]
     }
 
-    fn run(&self, ctx: &RunContext, _inputs: &Inputs, out_dir: &Path) -> Result<StageRun> {
+    fn run(
+        &self,
+        ctx: &RunContext,
+        _inputs: &Inputs,
+        out_dir: &Path,
+        on_event: &mut dyn FnMut(shoreline_core::pipeline::Event<'_>),
+    ) -> Result<StageRun> {
         let input = &ctx.config.dataset.input;
         if input.is_dir() {
             return Err(stage_error(format!(
@@ -81,9 +87,18 @@ impl Stage for Frames {
             .tools
             .get("ffmpeg")?
             .run(&extract, &out_dir.join(format!("logs/{LOG}.log")))?;
+        on_event(shoreline_core::pipeline::Event::Step {
+            stage: NAME,
+            message: "extracted frames",
+        });
 
         let threshold = ctx.config.frames.blur_threshold;
         let scores = select(&images, &out_dir.join("rejected"), threshold)?;
+        let kept = scores.iter().filter(|s| s.kept).count();
+        on_event(shoreline_core::pipeline::Event::Step {
+            stage: NAME,
+            message: &format!("scored {} frames, kept {}", scores.len(), kept),
+        });
         let csv = out_dir.join("frames.csv");
         std::fs::write(&csv, scores_csv(&scores)).map_err(io_error(&csv))?;
         if !scores.iter().any(|s| s.kept) {
@@ -432,7 +447,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ctx = stub_context(dir.path(), &["sharp", "near_drop", "near_keep"]);
         let out = out_dir(dir.path(), "out");
-        let run = Frames.run(&ctx, &Inputs::new(), &out).unwrap();
+        let run = Frames.run(&ctx, &Inputs::new(), &out, &mut |_| {}).unwrap();
 
         assert_eq!((run.metrics["extracted"], run.metrics["kept"]), (3.0, 2.0));
         assert!(out.join("images/00001.jpg").is_file() && out.join("images/00003.jpg").is_file());
@@ -455,7 +470,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ctx = stub_context(dir.path(), &["near_drop", "blurry"]);
         let out = out_dir(dir.path(), "out");
-        let err = Frames.run(&ctx, &Inputs::new(), &out).unwrap_err();
+        let err = Frames
+            .run(&ctx, &Inputs::new(), &out, &mut |_| {})
+            .unwrap_err();
         assert!(err.to_string().contains("blur_threshold = 100"), "{err}");
         assert!(out.join("frames.csv").is_file(), "scores kept for review");
     }
@@ -465,7 +482,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ctx = stub_context(dir.path(), &["sharp"]);
         let out = out_dir(dir.path(), "w%d");
-        let err = Frames.run(&ctx, &Inputs::new(), &out).unwrap_err();
+        let err = Frames
+            .run(&ctx, &Inputs::new(), &out, &mut |_| {})
+            .unwrap_err();
         assert!(err.to_string().contains("'%'"), "{err}");
         assert!(!dir.path().join("args.txt").exists(), "ffmpeg did not run");
     }
@@ -510,7 +529,9 @@ mod tests {
         .unwrap();
         let out = dir.path().join("out");
         fs::create_dir(&out).unwrap();
-        let err = Frames.run(&ctx, &Inputs::new(), &out).unwrap_err();
+        let err = Frames
+            .run(&ctx, &Inputs::new(), &out, &mut |_| {})
+            .unwrap_err();
         assert!(err.to_string().contains("#23"), "{err}");
     }
 

@@ -96,7 +96,13 @@ impl Stage for Masks {
         Some((segmented(log) as f64 / frames as f64).min(1.0))
     }
 
-    fn run(&self, ctx: &RunContext, inputs: &Inputs, out_dir: &Path) -> Result<StageRun> {
+    fn run(
+        &self,
+        ctx: &RunContext,
+        inputs: &Inputs,
+        out_dir: &Path,
+        on_event: &mut dyn FnMut(shoreline_core::pipeline::Event<'_>),
+    ) -> Result<StageRun> {
         let images = inputs[FRAMES].dir.join("images");
         let (raw, masks, overlays) = (
             out_dir.join("raw"),
@@ -118,6 +124,10 @@ impl Stage for Masks {
             .tools
             .get("segment")?
             .run(&segment, &out_dir.join(format!("logs/{LOG}.log")))?;
+        on_event(shoreline_core::pipeline::Event::Step {
+            stage: NAME,
+            message: "segmented frames",
+        });
 
         let dilate_px = ctx.config.masks.dilate_px as usize;
         let mut rows = Vec::new();
@@ -149,6 +159,10 @@ impl Stage for Masks {
                 masked_fraction: masked,
             });
         }
+        on_event(shoreline_core::pipeline::Event::Step {
+            stage: NAME,
+            message: &format!("processed {} frames", rows.len()),
+        });
         let csv = out_dir.join("masks.csv");
         std::fs::write(&csv, coverage_csv(&rows)).map_err(io_error(&csv))?;
         Ok(StageRun {
@@ -423,7 +437,7 @@ mod tests {
         let mut config = repo_config();
         config.masks.dilate_px = 3;
         let (ctx, inputs, out) = setup_with(dir.path(), config, &["sharp"], &[]);
-        let run = Masks.run(&ctx, &inputs, &out).unwrap();
+        let run = Masks.run(&ctx, &inputs, &out, &mut |_| {}).unwrap();
         let mask = image::open(out.join("masks/00001.jpg.png"))
             .unwrap()
             .into_luma8();
@@ -437,7 +451,7 @@ mod tests {
     fn run_writes_dilated_colmap_masks_overlays_and_coverage() {
         let dir = tempfile::tempdir().unwrap();
         let (ctx, inputs, out) = setup(dir.path(), &["sharp", "soft", "near_keep"], &[]);
-        let run = Masks.run(&ctx, &inputs, &out).unwrap();
+        let run = Masks.run(&ctx, &inputs, &out, &mut |_| {}).unwrap();
 
         let args = fs::read_to_string(dir.path().join("args.txt")).unwrap();
         let classes = ctx.config.masks.classes.join(",");
@@ -505,7 +519,10 @@ mod tests {
     fn a_frame_without_a_raw_mask_is_an_error_naming_it() {
         let dir = tempfile::tempdir().unwrap();
         let (ctx, inputs, out) = setup(dir.path(), &["sharp", "soft"], &["00002.jpg"]);
-        let err = Masks.run(&ctx, &inputs, &out).unwrap_err().to_string();
+        let err = Masks
+            .run(&ctx, &inputs, &out, &mut |_| {})
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("segment wrote no mask for 00002.jpg"), "{err}");
     }
 
@@ -513,7 +530,10 @@ mod tests {
     fn a_raw_mask_of_the_wrong_size_is_an_error() {
         let dir = tempfile::tempdir().unwrap();
         let (ctx, inputs, out) = setup(dir.path(), &["odd"], &[]);
-        let err = Masks.run(&ctx, &inputs, &out).unwrap_err().to_string();
+        let err = Masks
+            .run(&ctx, &inputs, &out, &mut |_| {})
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("320x240") && err.contains("37x23"), "{err}");
     }
 
@@ -569,7 +589,7 @@ mod tests {
             let tools = Tools::load(&dataset, None).unwrap();
             let ctx = RunContext::new(repo_config(), tools, &dir.path().join("work")).unwrap();
             let (_, inputs, out) = setup(dir.path(), &["sharp"], &[]);
-            let run = Masks.run(&ctx, &inputs, &out).unwrap();
+            let run = Masks.run(&ctx, &inputs, &out, &mut |_| {}).unwrap();
             assert_eq!(run.metrics["frames"], 1.0);
             assert!(out.join("masks/00001.jpg.png").is_file());
             assert!(
