@@ -232,7 +232,7 @@ fn run_stage(
         dir: &dir,
         index: position.index,
         total: position.total,
-        estimate: Estimate::of(work_root, name, version),
+        estimate: Estimate::of(work_root, name, Some(version)),
     });
 
     let started = Instant::now();

@@ -130,9 +130,15 @@ fn run_reported(
     let all = as_stages(stages);
     let plan = pipeline::plan(&all, targets)?;
     let work_root = ctx.work_dir.parent().unwrap_or(&ctx.work_dir);
-    let versions: std::collections::BTreeMap<&'static str, String> = all
+    let versions: std::collections::BTreeMap<&'static str, String> = plan
         .iter()
-        .map(|s| Ok((s.name(), s.version(ctx)?)))
+        .map(|&name| {
+            let stage = all
+                .iter()
+                .find(|s| s.name() == name)
+                .ok_or_else(|| anyhow::anyhow!("planned stage {name} is not registered"))?;
+            Ok((name, stage.version(ctx)?))
+        })
         .collect::<Result<_>>()?;
     let mut reporter = Reporter::new(stages, &plan, &ctx.config, work_root, Some(&versions));
     let results = pipeline::run(ctx, &all, targets, &mut |e| reporter.event(e))?;
