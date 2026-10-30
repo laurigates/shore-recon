@@ -1066,7 +1066,11 @@ mod tests {
     fn layered_tools_replace_whole_tables_lowest_first() {
         let t = Tools::layered(None, None, None).unwrap();
         assert_eq!(t.get("ffmpeg").unwrap().spec.runtime, Runtime::Native);
-        assert!(t.names().any(|n| n == "segment"));
+        // The local profile (ADR-0019): every stage's tool but the CUDA renderer.
+        assert_eq!(
+            t.names().collect::<Vec<_>>(),
+            ["brush", "colmap", "ffmpeg", "openmvs", "segment"]
+        );
 
         let user = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -1095,7 +1099,7 @@ mod tests {
         assert_eq!(t.get("ffmpeg").unwrap().spec.program, "ff-beside");
         let t = Tools::layered(Some(user.path()), Some(&config), Some(&overlay)).unwrap();
         assert_eq!(t.get("ffmpeg").unwrap().spec.program, "ff-host");
-        let err = t.get("colmap").unwrap_err().to_string();
+        let err = t.get("render").unwrap_err().to_string();
         assert!(err.contains("--tools") && err.contains("user's"), "{err}");
     }
 

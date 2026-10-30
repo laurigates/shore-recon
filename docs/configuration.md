@@ -37,9 +37,21 @@ a table in a later layer replaces the whole table for that tool:
 | `gpu` | pass the host GPUs through, containers only |
 | `[<tool>.remote]` | run the container on another host over ssh ([ADR-0009](adr/0009-remote-tools-over-ssh.md)) |
 
-The built-in tools run ffmpeg natively and the segmentation model in Docker
-(`linux/arm64`, CPU; [ADR-0006](adr/0006-masks-segmentation-container.md)). COLMAP,
-OpenMVS, Brush and the video renderer come from a user or host tools file for now.
+The built-in tools are the local profile
+([ADR-0019](adr/0019-local-tool-profile.md)): every stage but the videos runs on this
+machine, with no tools file.
+
+| Tool | Runs as | Install |
+|---|---|---|
+| `ffmpeg` | native | Homebrew dependency |
+| `segment` | Docker, `linux/arm64`, CPU ([ADR-0006](adr/0006-masks-segmentation-container.md)) | pulled on first use |
+| `colmap` | native, CPU | Homebrew dependency |
+| `brush` | native (`brush_app`): Metal on macOS, Vulkan on Linux | Homebrew dependency (`laurigates/tap/shoreline-brush`) |
+| `openmvs` | Docker, `linux/arm64` + `linux/amd64`, CPU | pulled on first use |
+
+Docker must be running. The video renderer has no local default: `--videos` needs a
+`render` table from a host file. Before the first stage, the pipeline checks every tool
+the run needs and stops with the table to fix when one is missing.
 
 ## User files
 
@@ -50,7 +62,8 @@ else `~/.config/shoreline-recon` (on macOS too). It may hold `config.toml` and
 
 ## The remote GPU host
 
-The CUDA images for COLMAP, OpenMVS, Brush and the video renderer are `linux/amd64`,
+A GPU host is optional: it runs sfm, dense and splat about 1.6× faster than the
+local profile (ADR-0019) and is the only way to render videos. The CUDA images for COLMAP, OpenMVS, Brush and the video renderer are `linux/amd64`,
 built for sm_89 ([containers/README.md](../containers/README.md),
 [ADR-0011](adr/0011-splat-and-dense-images.md)). They run on a CUDA host over ssh under
 Apptainer: each call mirrors its mounts to the host with rsync, runs the container there

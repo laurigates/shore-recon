@@ -24,6 +24,14 @@ install-updater = false
 # release-please creates the GitHub Release and its tag; dist uploads to it (ADR-0016)
 create-release = false
 
+# The native tools of the built-in local profile (ADR-0019), as depends_on in the
+# Homebrew formula; "run" only, so release CI does not install them to build.
+# Docker, for the segmentation and OpenMVS images, is an app, not a formula.
+[dist.dependencies.homebrew]
+ffmpeg = { stage = ["run"] }
+colmap = { stage = ["run"] }
+"laurigates/tap/shoreline-brush" = { stage = ["run"] }
+
 # Actions pinned to commits, as in ci.yml (Renovate keeps them current)
 [dist.github-action-commits]
 "actions/checkout" = "d23441a48e516b6c34aea4fa41551a30e30af803" # v6.1.0

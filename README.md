@@ -26,9 +26,13 @@ splat come out.
 ```sh
 brew tap laurigates/tap
 brew trust laurigates/tap      # Homebrew loads third-party taps only once trusted
-brew install shoreline-recon
+brew install shoreline-recon   # brings ffmpeg, COLMAP and Brush
 shoreline-recon pier.mp4
 ```
+
+Docker must be running: the segmentation model and OpenMVS run in public images,
+pulled on first use. Everything runs on the local machine, on the CPU apart from
+Brush; a clip that keeps 117 frames took about 90 minutes on Apple Silicon.
 
 The deliverables land in `./pier-recon/`:
 
@@ -39,13 +43,11 @@ The deliverables land in `./pier-recon/`:
 | `water_plane.json` | the fitted water plane and the splat-to-mesh transform |
 | `report.json` | every stage's metrics, fingerprint and tools, and the resolved config |
 
-`--videos` also renders the showcase and processing-step videos. Other options:
-`shoreline-recon --help` and [docs/usage.md](docs/usage.md).
+Other options: `shoreline-recon --help` and [docs/usage.md](docs/usage.md).
 
-The pipeline calls external tools (ffmpeg, a segmentation model, COLMAP, OpenMVS, Brush).
-How each one runs, natively, in a container or on a remote CUDA host, is machine
-configuration: see [docs/configuration.md](docs/configuration.md). Running every stage
-on the local machine by default, Apple Silicon included, is in progress.
+A remote CUDA host runs the heavy stages faster and also renders the showcase and
+processing-step videos (`--videos`). How each tool runs, locally, in a container or on
+that host, is machine configuration: see [docs/configuration.md](docs/configuration.md).
 
 Other installs: the shell installer and archives for macOS (Apple Silicon) and Linux
 (x86_64) on the [releases page](https://github.com/laurigates/shore-recon/releases), or
