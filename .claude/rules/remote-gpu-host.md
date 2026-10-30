@@ -9,9 +9,10 @@ paths:
 
 # Running Stages on the Remote GPU Host
 
-SfM, splat training, dense reconstruction and video renders run on a CUDA host over ssh; this
-machine prepares inputs and receives results. The host is **configuration, not code**: never
-write its name or paths into committed files.
+Video renders need a CUDA host over ssh; SfM, splat training and dense reconstruction run
+there faster, but also locally from the built-in tools (ADR-0019). This machine prepares
+inputs and receives results. The host is **configuration, not code**: never write its name
+or paths into committed files.
 
 ## Where the host comes from
 
@@ -36,6 +37,17 @@ write its name or paths into committed files.
   git-ignored), not in `configs/tools.toml`. After the `main` run finishes, take the digest
   from its log (`gh run view <id> --log | grep -oE 'shoreline-<name>@sha256:[0-9a-f]{64}'`)
   and edit the host file; there is nothing to commit.
+- The local-profile images are the exception: `segment` and `openmvs` are pinned in the
+  committed `configs/tools.toml`, so a new digest is a PR. `openmvs-cpu` builds per
+  architecture; pin the **index** digest that the `openmvs-cpu (manifest)` job prints, not
+  either per-arch digest from the same log:
+
+  ```sh
+  gh run view <id> --log | grep 'openmvs-cpu (manifest)' | grep -oE 'shoreline-openmvs-cpu@sha256:[0-9a-f]{64}' | sort -u
+  ```
+- A Brush bump touches two repos: `containers/brush/Containerfile` here and
+  `Formula/shoreline-brush.rb` in `laurigates/homebrew-tap`, which the shoreline-recon
+  formula depends on. Merge the tap change before the release that needs it.
 - A new pin changes the stage's version, so the stage and everything downstream re-run.
 
 ## How to drive it
