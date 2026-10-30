@@ -19,6 +19,10 @@ struct Timing {
     seconds: Option<f64>,
     #[serde(default)]
     tools: Vec<ToolTiming>,
+    /// Stage version recorded in the manifest (ADR-0004); absent in the
+    /// oldest manifests, which then match no specific version.
+    #[serde(default)]
+    version: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -28,8 +32,14 @@ struct ToolTiming {
 
 /// Seconds each completed run of `stage` took, under every dataset in
 /// `work_root`. A manifest without a wall time counts its tools' time.
-pub fn durations(work_root: &Path, stage: &str) -> Vec<f64> {
-    let mut out = Vec::new();
+///
+/// When `version` is `Some`, only runs whose recorded stage version matches
+/// are kept; if none match, every run is kept as a fallback (history is
+/// advisory). `None` keeps every run.
+pub fn durations(work_root: &Path, stage: &str, version: impl AsRef<str>) -> Vec<f64> {
+    let version = Some(version.as_ref().to_owned());
+    let mut all = Vec::new();
+    let mut matching = Vec::new();
     for dataset in subdirs(work_root) {
         for output in subdirs(&dataset.join(stage)) {
             let Ok(text) = std::fs::read_to_string(output.join(MANIFEST_FILE)) else {
@@ -41,12 +51,20 @@ pub fn durations(work_root: &Path, stage: &str) -> Vec<f64> {
             let seconds = t
                 .seconds
                 .unwrap_or_else(|| t.tools.iter().map(|tool| tool.seconds).sum());
-            if seconds.is_finite() && seconds > 0.0 {
-                out.push(seconds);
+            if !(seconds.is_finite() && seconds > 0.0) {
+                continue;
+            }
+            all.push(seconds);
+            if version.is_none() || t.version.as_ref() == version.as_ref() {
+                matching.push(seconds);
             }
         }
     }
-    out
+    if version.is_some() && !matching.is_empty() {
+        matching
+    } else {
+        all
+    }
 }
 
 fn subdirs(dir: &Path) -> Vec<std::path::PathBuf> {
@@ -83,8 +101,8 @@ impl Estimate {
     }
 
     /// From [`durations`] of `stage` under `work_root`.
-    pub fn of(work_root: &Path, stage: &str) -> Option<Self> {
-        Self::from_durations(&durations(work_root, stage))
+    pub fn of(work_root: &Path, stage: &str, version: impl AsRef<str>) -> Option<Self> {
+        Self::from_durations(&durations(work_root, stage, version))
     }
 }
 
@@ -145,10 +163,22 @@ mod tests {
         std::fs::create_dir_all(r.join("pier/dense/interrupted")).unwrap();
         std::fs::write(r.join("stray-file"), "").unwrap();
 
-        assert_eq!(durations(r, "dense"), [600.0, 1560.0]);
-        assert_eq!(durations(r, "sfm"), [200.0]);
-        assert!(durations(r, "splat").is_empty());
-        assert!(durations(&r.join("absent"), "dense").is_empty());
+        assert_eq!(durations(r, "dense", ""), [600.0, 1560.0]);
+        assert_eq!(durations(r, "sfm", ""), [200.0]);
+        assert!(durations(r, "splat", "").is_empty());
+        assert!(durations(&r.join("absent"), "dense", "").is_empty());
+    }
+
+    #[test]
+    fn durations_keep_only_matching_stage_version() {
+        let root = tempfile::tempdir().unwrap();
+        let r = root.path();
+        write(r, "a/dense/x", r#"{"version":"v1","seconds":100.0}"#);
+        write(r, "b/dense/y", r#"{"version":"v2","seconds":200.0}"#);
+        assert_eq!(durations(r, "dense", "v1"), [100.0]);
+        assert_eq!(durations(r, "dense", "v2"), [200.0]);
+        // no matching version: fall back to every run
+        assert_eq!(durations(r, "dense", "v3"), [100.0, 200.0]);
     }
 
     #[test]

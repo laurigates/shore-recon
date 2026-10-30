@@ -63,15 +63,20 @@ impl Reporter {
         plan: &[&'static str],
         config: &Config,
         work_root: &Path,
+        versions: Option<&std::collections::BTreeMap<&'static str, String>>,
     ) -> Self {
         let planned = stages
             .iter()
             .filter(|s| plan.contains(&s.name()))
             .map(|&stage| {
+                let estimate = match versions.and_then(|v| v.get(stage.name())) {
+                    Some(version) => Estimate::of(work_root, stage.name(), version.as_str()),
+                    None => Estimate::of(work_root, stage.name(), ""),
+                };
                 let planned = Planned {
                     stage,
                     steps: stage.steps(config),
-                    estimate: Estimate::of(work_root, stage.name()),
+                    estimate,
                 };
                 (stage.name(), planned)
             })
