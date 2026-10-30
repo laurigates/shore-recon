@@ -20,8 +20,11 @@ dependencies = [
 
 [tool.uv]
 package = false
-# The image is linux/arm64 only (local Docker on Apple Silicon).
-environments = ["sys_platform == 'linux' and platform_machine == 'aarch64'"]
+# The image is built for linux/arm64 (Apple Silicon) and linux/amd64 (x86_64 Linux hosts).
+environments = [
+    "sys_platform == 'linux' and platform_machine == 'aarch64'",
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
 
 [tool.uv.sources]
 torch = { index = "pytorch-cpu" }

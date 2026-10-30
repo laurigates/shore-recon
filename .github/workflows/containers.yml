@@ -34,9 +34,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # linux/arm64 for local Docker on Apple Silicon; built under QEMU.
+          # Local Docker on Apple Silicon (arm64) and x86_64 Linux (amd64), one native
+          # runner per architecture; the manifest job joins them like openmvs-cpu below.
           - name: segmentation
             platform: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
+            cache: max
+          - name: segmentation
+            platform: linux/amd64
+            arch: amd64
             cache: max
           # linux/amd64 for the GPU host (Apptainer --nv).
           - name: brush
@@ -123,18 +130,22 @@ jobs:
         if: env.PUSH == 'true'
         run: echo "${IMAGE}@${{ steps.build.outputs.digest }}" | tee -a "$GITHUB_STEP_SUMMARY"
 
-  # One index for the per-architecture openmvs-cpu images; its digest is the one a
-  # tools file pins, and Docker picks the host's architecture from it. Runs even
-  # when another image's leg failed; a missing arch tag fails `imagetools create`.
+  # One index per multi-architecture image; its digest is the one a tools file pins,
+  # and Docker picks the host's architecture from it. Runs even when another
+  # image's leg failed; a missing arch tag fails `imagetools create`.
   manifest:
-    name: openmvs-cpu (manifest)
+    name: ${{ matrix.name }} (manifest)
     needs: image
     if: ${{ !cancelled() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     permissions:
       packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        name: [openmvs-cpu, segmentation]
     env:
-      IMAGE: ghcr.io/laurigates/shoreline-openmvs-cpu
+      IMAGE: ghcr.io/laurigates/shoreline-${{ matrix.name }}
       TAG: sha-${{ github.sha }}
     steps:
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
