@@ -80,6 +80,20 @@ pub trait Stage {
         let _ = (config, metrics);
         Ok(Vec::new())
     }
+    /// The tool steps `run` executes for `config`, in order, named by the
+    /// stems of their logs (`logs/<step>.log`). Progress reporting tells the
+    /// current step by the newest log.
+    fn steps(&self, config: &Config) -> Vec<String> {
+        let _ = config;
+        Vec::new()
+    }
+    /// Completed fraction (0 to 1) of `step`, from its log so far. `frames`
+    /// is the number of frames the frames stage kept, when known. `None`
+    /// when the log does not tell.
+    fn progress(&self, step: &str, log: &str, frames: Option<usize>) -> Option<f64> {
+        let _ = (step, log, frames);
+        None
+    }
 }
 
 #[cfg(test)]

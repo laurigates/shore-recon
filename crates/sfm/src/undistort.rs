@@ -16,6 +16,9 @@ use shoreline_core::{Error, Result};
 
 use crate::model::{Camera, Model};
 
+/// Log stem of the undistorter step.
+pub const LOG: &str = "image_undistorter";
+
 /// `colmap image_undistorter` arguments writing `out/{images,sparse,stereo}`.
 pub fn undistorter_args(images: &Path, sparse: &Path, out: &Path) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec!["image_undistorter".into(), "--image_path".into()];

@@ -18,6 +18,8 @@ use shoreline_core::tools::Invocation;
 use shoreline_core::{Config, Error, Result, RunContext, Stage};
 
 pub const NAME: &str = "frames";
+/// Log stem of the extraction step.
+const LOG: &str = "ffmpeg";
 
 /// Bump when the output changes for the same config, input and ffmpeg.
 const REVISION: u32 = 2;
@@ -50,6 +52,10 @@ impl Stage for Frames {
         Ok(format!("{NAME}/{REVISION} {ffmpeg}"))
     }
 
+    fn steps(&self, _: &Config) -> Vec<String> {
+        vec![LOG.to_owned()]
+    }
+
     fn run(&self, ctx: &RunContext, _inputs: &Inputs, out_dir: &Path) -> Result<StageRun> {
         let input = &ctx.config.dataset.input;
         if input.is_dir() {
@@ -74,7 +80,7 @@ impl Stage for Frames {
         let record = ctx
             .tools
             .get("ffmpeg")?
-            .run(&extract, &out_dir.join("logs/ffmpeg.log"))?;
+            .run(&extract, &out_dir.join(format!("logs/{LOG}.log")))?;
 
         let threshold = ctx.config.frames.blur_threshold;
         let scores = select(&images, &out_dir.join("rejected"), threshold)?;
@@ -435,6 +441,7 @@ mod tests {
         assert_eq!(csv.lines().count(), 4, "{csv}");
         assert_eq!(run.tools[0].log, out.join("logs/ffmpeg.log"));
         assert!(run.tools[0].log.is_file());
+        assert_eq!(Frames.steps(&ctx.config), ["ffmpeg"]);
 
         let args = fs::read_to_string(dir.path().join("args.txt")).unwrap();
         let args: Vec<_> = args.lines().collect();

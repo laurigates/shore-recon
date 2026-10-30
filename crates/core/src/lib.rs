@@ -8,6 +8,7 @@ pub mod dag;
 pub mod dirs;
 pub mod error;
 pub mod fingerprint;
+pub mod history;
 pub mod pipeline;
 pub mod stage;
 pub mod tools;

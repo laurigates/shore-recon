@@ -104,6 +104,19 @@ pub fn openmvs_steps(out: &Path) -> Vec<(&'static str, Vec<OsString>)> {
     ]
 }
 
+/// The last OpenMVS progress figure in `log`, as a fraction: OpenMVS redraws
+/// `Estimated depth-maps 47 (38.84%, 9s, ETA 14s)...` with carriage returns.
+/// Each pass of a step starts again from 0%.
+pub fn last_percent(log: &str) -> Option<f64> {
+    log.rmatch_indices("%,")
+        .find_map(|(end, _)| {
+            let head = &log[..end];
+            let open = head.rfind('(')?;
+            head[open + 1..].parse::<f64>().ok()
+        })
+        .map(|percent| percent / 100.0)
+}
+
 impl Stage for Dense {
     fn name(&self) -> &'static str {
         NAME
@@ -137,6 +150,21 @@ impl Stage for Dense {
         ))
     }
 
+    fn steps(&self, _: &Config) -> Vec<String> {
+        let openmvs = openmvs_steps(Path::new("")).into_iter().map(|(log, _)| log);
+        std::iter::once(undistort::LOG)
+            .chain(openmvs)
+            .map(str::to_owned)
+            .collect()
+    }
+
+    fn progress(&self, step: &str, log: &str, _frames: Option<usize>) -> Option<f64> {
+        match step {
+            undistort::LOG => None,
+            _ => last_percent(log),
+        }
+    }
+
     fn run(&self, ctx: &RunContext, inputs: &Inputs, out_dir: &Path) -> Result<StageRun> {
         let images = inputs[FRAMES].dir.join("images");
         let masks = inputs[MASKS].dir.join("masks");
@@ -153,8 +181,10 @@ impl Stage for Dense {
 
         let colmap = ctx.tools.get(COLMAP)?;
         let undistort_args = undistort::undistorter_args(&images, &sparse, &undistorted);
-        let mut tools =
-            vec![colmap.run(&mount(undistort_args), &logs.join("image_undistorter.log"))?];
+        let mut tools = vec![colmap.run(
+            &mount(undistort_args),
+            &logs.join(format!("{}.log", undistort::LOG)),
+        )?];
         let distorted = Model::read_binary(&sparse)?;
         let model = Model::read_binary(&undistorted.join("sparse"))?;
         undistort::undistort_masks(&distorted, &model, &masks, &out_dir.join("masks"), |name| {
@@ -200,6 +230,47 @@ fn stage_error(message: impl Into<String>) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// From `work/reposalmi-laajasalo/dense/79fd10672efc5a7c/logs/DensifyPointCloud.log`.
+    const DENSIFY: &str = "\tthat 50504 points with 4+ views (73.64%)\n\
+        Estimated depth-maps 46 (38.02%, 8s, ETA 14s)...\r\
+        Estimated depth-maps 47 (38.84%, 9s, ETA 14s)...\rEstimated depth-maps 4";
+    const FUSED: &str = "Dense fused depth-maps 120 (99.17%, 35s, ETA 293ms)...\r\
+        Dense fused depth-maps 121 (100%, 35s300ms)           \n\
+        13:31:00 [ScnDense] Depth-maps dense fused and filtered: 121 depth-maps, \
+        66294213 depths, 2629388 points (4%%), 11.16 hits in 67.19 cached (35s332ms)\n";
+
+    #[test]
+    fn progress_is_the_last_openmvs_percentage() {
+        assert_eq!(last_percent(DENSIFY), Some(0.3884));
+        assert_eq!(last_percent(FUSED), Some(1.0));
+        assert_eq!(last_percent("\t57059 points inside ROI (83.20%)\n"), None);
+        assert_eq!(
+            Dense.progress("DensifyPointCloud", DENSIFY, None),
+            Some(0.3884)
+        );
+        assert_eq!(Dense.progress("image_undistorter", DENSIFY, None), None);
+    }
+
+    #[test]
+    fn steps_are_the_log_names_in_run_order() {
+        let config = Config::layered(
+            None,
+            &[],
+            "[dataset]\nname='x'\ninput='x.mp4'".parse().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            Dense.steps(&config),
+            [
+                "image_undistorter",
+                "InterfaceCOLMAP",
+                "DensifyPointCloud",
+                "ReconstructMesh",
+                "TextureMesh"
+            ]
+        );
+    }
 
     fn strings(args: &[OsString]) -> Vec<String> {
         args.iter()

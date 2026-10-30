@@ -81,6 +81,10 @@ impl Stage for Splat {
         Ok(format!("{NAME}/{REVISION} {colmap} {brush}"))
     }
 
+    fn steps(&self, _: &Config) -> Vec<String> {
+        vec![undistort::LOG.to_owned(), BRUSH.to_owned()]
+    }
+
     fn run(&self, ctx: &RunContext, inputs: &Inputs, out_dir: &Path) -> Result<StageRun> {
         let images = inputs[FRAMES].dir.join("images");
         let masks = inputs[MASKS].dir.join("masks");
@@ -97,8 +101,10 @@ impl Stage for Splat {
 
         let colmap = ctx.tools.get(COLMAP)?;
         let undistort_args = undistort::undistorter_args(&images, &sparse, &dataset);
-        let mut tools =
-            vec![colmap.run(&mount(undistort_args), &logs.join("image_undistorter.log"))?];
+        let mut tools = vec![colmap.run(
+            &mount(undistort_args),
+            &logs.join(format!("{}.log", undistort::LOG)),
+        )?];
         let zero = tidy_dataset(&dataset)?;
         let distorted = Model::read_binary(&sparse)?;
         let undistorted = Model::read_binary(&zero)?;
@@ -113,7 +119,7 @@ impl Stage for Splat {
         let steps = ctx.config.splat.steps;
         let brush = ctx.tools.get(BRUSH)?;
         let args = brush_args(&dataset, out_dir, steps);
-        tools.push(brush.run(&mount(args), &logs.join("brush.log"))?);
+        tools.push(brush.run(&mount(args), &logs.join(format!("{BRUSH}.log")))?);
         let exported = out_dir.join(format!("splat_{steps}.ply"));
         let splat = out_dir.join("splat.ply");
         std::fs::rename(&exported, &splat).map_err(|_| {
@@ -150,6 +156,17 @@ mod tests {
         args.iter()
             .map(|a| a.to_string_lossy().into_owned())
             .collect()
+    }
+
+    #[test]
+    fn steps_are_the_log_names_in_run_order() {
+        let config = Config::layered(
+            None,
+            &[],
+            "[dataset]\nname='x'\ninput='x.mp4'".parse().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(Splat.steps(&config), ["image_undistorter", "brush"]);
     }
 
     #[test]
