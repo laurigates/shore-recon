@@ -1,7 +1,8 @@
 # Dense backend for machines without a CUDA host (ADR-0011): the same OpenMVS
-# sources as containers/openmvs, built without CUDA for linux/arm64 so Docker on
-# Apple Silicon runs it natively. Densify and texturing run on the CPU: slower,
-# same outputs. Built and pushed by .github/workflows/containers.yml.
+# sources as containers/openmvs, built without CUDA for linux/arm64 (Docker on
+# Apple Silicon) and linux/amd64. Densify and texturing run on the CPU: slower,
+# same outputs. Built and pushed by .github/workflows/containers.yml as one index
+# for both architectures.
 FROM ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac AS build
 
 # Keep these in step with containers/openmvs/Containerfile.
