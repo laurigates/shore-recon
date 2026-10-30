@@ -46,6 +46,9 @@ pub struct Frames {
     pub fps: f64,
     pub blur_threshold: f64,
     pub max_long_edge: Option<u32>,
+    /// Maximum Hamming distance between 8x8 perceptual hashes for two
+    /// frames to be treated as near-duplicates (0 = exact duplicates only).
+    pub dedup_threshold: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -255,6 +258,9 @@ impl Config {
         }
         if self.frames.fps <= 0.0 {
             return invalid("frames.fps must be positive");
+        }
+        if self.frames.dedup_threshold > 64 {
+            return invalid("frames.dedup_threshold must be at most 64");
         }
         if self.video.views.is_empty() {
             return invalid("video.views must list at least one view");
