@@ -50,12 +50,21 @@ def referenced_digests(tools: dict) -> set[str]:
     return digests
 
 
-def ssh(host: str, command: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["ssh", "-o", "BatchMode=yes", host, command],
-        capture_output=True,
-        text=True,
-    )
+SSH_TIMEOUT = 60
+
+
+def ssh(host: str, command: str, timeout: int = SSH_TIMEOUT) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(
+            ["ssh", "-o", "BatchMode=yes", host, command],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"ssh to {host} timed out after {timeout}s running: {command}"
+        ) from exc
 
 
 def list_remote_dirs(host: str, root: str) -> list[str]:
@@ -123,13 +132,16 @@ def list_remote_cache_files(host: str, cache_dir: str) -> list[str]:
 
 
 def prune_cache_candidates(cache_files: Iterable[str], digests: set[str]) -> list[str]:
-    """Cache files not referencing any digest used by the tools file."""
+    """Cache files not referencing any digest used by the tools file.
+
+    A cache entry is retained when its path contains (or contains a short
+    prefix of) a digest referenced by some tool; every other entry is a
+    candidate for pruning.  The match is deliberately by substring so that
+    both full digests and Apptainer's truncated cache names are handled.
+    """
     short = {d.split(":")[-1][:12] for d in digests if d}
     out = []
     for f in cache_files:
-        low = f.lower()
-        if not (low.endswith(".sif") or "sif" in low):
-            continue
         if any(d in f or s in f for d in digests for s in short):
             continue
         out.append(f)
@@ -201,8 +213,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--work", default="work", help="local work directory (source of truth)")
     parser.add_argument("--host", help="override ssh host")
     parser.add_argument("--root", help="override remote root")
-    parser.add_argument("--cache-dir", help="override Apptainer cache dir")
-    parser.add_argument("--prune-cache", action="store_true", help="also prune stale SIF/cache entries")
     parser.add_argument("--apply", action="store_true", help="actually delete (default is dry run)")
     parser.add_argument("--dry-run", action="store_true", help="list only (default)")
     args = parser.parse_args(argv)
@@ -217,32 +227,42 @@ def main(argv: list[str] | None = None) -> int:
         print("no remote tools configured in tools file", file=sys.stderr)
         return 2
 
-    remote = remotes[0]
-    host = args.host or remote.get("host")
-    root = args.root or remote.get("root")
-    if not host or not root:
-        print("remote host/root missing", file=sys.stderr)
-        return 2
-
-    cache_dir = args.cache_dir
-    if cache_dir is None and args.prune_cache:
-        env = remote.get("env", {}) or {}
-        cache_dir = env.get("APPTAINER_CACHEDIR")
-
     digests = referenced_digests(tools)
     work_root = Path(args.work)
-
     dry_run = args.dry_run or not args.apply
-    return run_cleanup(
-        host=host,
-        root=str(root),
-        work_root=work_root,
-        cache_dir=cache_dir,
-        digests=digests,
-        prune_cache=args.prune_cache,
-        apply=args.apply,
-        dry_run=dry_run,
-    )
+
+    # Collect every distinct (host, root) so a tools file with several remote
+    # tools on different roots/hosts cleans all of them (a repeated root is
+    # cleaned only once).
+    seen: set[tuple[str | None, str | None]] = set()
+    distinct: list[tuple[str, str]] = []
+    for remote in remotes:
+        host = args.host or remote.get("host")
+        root = args.root or remote.get("root")
+        if not host or not root:
+            print("remote host/root missing", file=sys.stderr)
+            return 2
+        key = (host, root)
+        if key in seen:
+            continue
+        seen.add(key)
+        distinct.append((host, root))
+
+    rc = 0
+    for host, root in distinct:
+        result = run_cleanup(
+            host=host,
+            root=str(root),
+            work_root=work_root,
+            cache_dir=None,
+            digests=digests,
+            prune_cache=False,
+            apply=args.apply,
+            dry_run=dry_run,
+        )
+        if result != 0:
+            rc = result
+    return rc
 
 
 if __name__ == "__main__":
