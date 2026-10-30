@@ -22,8 +22,8 @@ run does not. Every other frame is at 0.955 or above.
 ## Decision
 
 1. `containers/segmentation/` builds an image from `python:3.12-slim-bookworm` (pinned by digest),
-   with every Python package pinned by `constraints.txt` (the built image's `pip freeze`; CPU torch
-   comes from PyTorch's CPU index), and the model
+   with every Python package pinned with hashes by `uv.lock` (a uv project, `pyproject.toml`; CPU
+   torch comes from PyTorch's CPU index; until #83, `constraints.txt` from the image's `pip freeze`), and the model
    weights at revision `4a5bac8e64f82681a12db2e151a4c2f4ce6092b2` under `/opt/models/oneformer`.
    The processor's class metadata (`ade20k_panoptic.json`), which it would otherwise download from
    the dataset repo `shi-labs/oneformer_demo` at run time, is baked beside the weights at revision

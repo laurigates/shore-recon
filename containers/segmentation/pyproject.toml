@@ -1,0 +1,32 @@
+# Python environment of the segmentation image (ADR-0006). uv.lock pins every package with
+# hashes; the Containerfile installs it with `uv sync --frozen`. After changing this file, run
+# `uv lock` here; CI fails when the lock is out of date (`uv lock --check`).
+[project]
+name = "shoreline-segmentation"
+version = "0"
+requires-python = "==3.12.*"
+dependencies = [
+    # From PyTorch's CPU index (below): PyPI's aarch64 wheel bundles CUDA 13.
+    "torch==2.14.1",
+    "transformers==5.20.2",
+    "huggingface_hub==2.3.0",
+    "tokenizers==0.23.3",
+    "safetensors==0.8.0",
+    "numpy==2.5.4",
+    "pillow==13.0.0",
+    # transformers' OneFormer builds its training loss at construction, which imports scipy.
+    "scipy==1.18.1",
+]
+
+[tool.uv]
+package = false
+# The image is linux/arm64 only (local Docker on Apple Silicon).
+environments = ["sys_platform == 'linux' and platform_machine == 'aarch64'"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

@@ -2,10 +2,11 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "packageRules": [
     {
-      "description": "The render image installs only from requirements.lock (uv pip compile, hashes, BUILD_NO_CUDA); a bump of requirements.txt alone does not reach the image, and a torch bump can move the CUDA build (#63). Update both by hand.",
-      "matchManagers": ["pip_requirements"],
-      "matchFileNames": ["containers/render/requirements.txt"],
-      "enabled": false
+      "description": "torch's CUDA build decides the render image's CUDA base image and the Containerfile's assertion (#63), so a torch bump there waits for approval and moves them together.",
+      "matchManagers": ["pep621"],
+      "matchFileNames": ["containers/render/pyproject.toml"],
+      "matchPackageNames": ["torch"],
+      "dependencyDashboardApproval": true
     }
   ]
 }

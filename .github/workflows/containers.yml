@@ -57,18 +57,17 @@ jobs:
       PUSH: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      # render installs only from its lock, so a pin bumped in requirements.txt alone never
-      # reaches the image (#63). gsplat is built from its sdist and is not in the lock.
-      - name: Check requirements.txt against the lock
-        if: matrix.name == 'render'
-        working-directory: containers/render
-        run: |
-          status=0
-          for pin in $(grep -E '^[A-Za-z0-9._-]+==' requirements.txt | grep -v '^gsplat==' | cut -d' ' -f1); do
-            grep -qiE "^${pin//./\\.} " requirements.lock \
-              || { echo "::error file=containers/render/requirements.txt::${pin} is not in requirements.lock; regenerate the lock"; status=1; }
-          done
-          exit $status
+      # render and segmentation install only from uv.lock, so a pin changed in pyproject.toml
+      # without re-locking would never reach the image (#63, #83).
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        if: hashFiles(format('containers/{0}/uv.lock', matrix.name)) != ''
+        with:
+          version: "0.13.5"
+          enable-cache: false
+      - name: Check uv.lock against pyproject.toml
+        if: hashFiles(format('containers/{0}/uv.lock', matrix.name)) != ''
+        working-directory: containers/${{ matrix.name }}
+        run: uv lock --check
       - name: Free disk space
         if: matrix.name == 'openmvs' || matrix.name == 'render'
         run: |
