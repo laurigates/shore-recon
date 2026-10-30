@@ -1,10 +1,11 @@
-//! `frames` stage: frames from a video at `frames.fps`, the long edge capped at
-//! `frames.max_long_edge`, and frames blurrier than `frames.blur_threshold`
-//! moved aside (ADR-0005). Photo-directory input is not implemented yet (#23);
-//! near-duplicate dropping is #10.
+//! `frames` stage: frames from a video at `frames.fps`, or a directory of photos,
+//! the long edge capped at `frames.max_long_edge`, and frames blurrier than
+//! `frames.blur_threshold` moved aside (ADR-0005). Photo-directory input
+//! converts each image to a numbered JPEG with EXIF orientation applied and
+//! the EXIF focal length preserved; near-duplicate dropping is #10.
 //!
 //! Output: `images/00001.jpg…` (kept), `rejected/` (too blurry),
-//! `frames.csv` (every frame's score), `logs/ffmpeg.log`.
+//! `frames.csv` (every frame's score), `logs/ffmpeg.log` (video input only).
 
 pub mod blur;
 pub mod dedup;
@@ -50,12 +51,20 @@ impl Stage for Frames {
     }
 
     fn version(&self, ctx: &RunContext) -> Result<String> {
+        if ctx.config.dataset.input.is_dir() {
+            // Photo-directory input never invokes ffmpeg, so do not require it.
+            return Ok(format!("{NAME}/{REVISION}"));
+        }
         let ffmpeg = ctx.tools.get("ffmpeg")?.version(&["-version"])?;
         Ok(format!("{NAME}/{REVISION} {ffmpeg}"))
     }
 
-    fn steps(&self, _: &Config) -> Vec<String> {
-        vec![LOG.to_owned()]
+    fn steps(&self, config: &Config) -> Vec<String> {
+        if config.dataset.input.is_dir() {
+            Vec::new()
+        } else {
+            vec![LOG.to_owned()]
+        }
     }
 
     fn run(
@@ -240,26 +249,37 @@ pub fn metrics(scores: &[Score]) -> Metrics {
 }
 
 /// Collect the image files in a directory (non-recursive), sorted by name.
+/// Image extensions the crate can actually decode with its compiled `image`
+/// features. Keep in sync with the `image` features in the workspace manifest.
+const SUPPORTED_IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png"];
+
+/// Image extensions we recognise but cannot decode with the current features.
+const UNSUPPORTED_IMAGE_EXTENSIONS: &[&str] = &["tif", "tiff", "webp"];
+
 pub fn collect_images(dir: &Path) -> Result<Vec<std::path::PathBuf>> {
     let mut out = Vec::new();
     for entry in std::fs::read_dir(dir).map_err(io_error(dir))? {
         let entry = entry.map_err(io_error(dir))?;
         let path = entry.path();
-        if path.is_file() && is_image(&path) {
-            out.push(path);
+        if !path.is_file() {
+            continue;
+        }
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase());
+        match ext.as_deref() {
+            Some(e) if SUPPORTED_IMAGE_EXTENSIONS.contains(&e) => out.push(path),
+            Some(e) if UNSUPPORTED_IMAGE_EXTENSIONS.contains(&e) => {
+                return Err(stage_error(format!(
+                    "unsupported image format '.{e}'; supported extensions: {}",
+                    SUPPORTED_IMAGE_EXTENSIONS.join(", ")
+                )));
+            }
+            _ => {}
         }
     }
     Ok(out)
-}
-
-fn is_image(path: &Path) -> bool {
-    matches!(
-        path.extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.to_ascii_lowercase())
-            .as_deref(),
-        Some("jpg" | "jpeg" | "png" | "tif" | "tiff" | "webp")
-    )
 }
 
 /// EXIF orientation value (1..=8), defaulting to 1 (upright) when absent.
@@ -712,6 +732,115 @@ mod tests {
             .run(&ctx, &Inputs::new(), &out, &mut |_| {})
             .unwrap_err();
         assert!(err.to_string().contains("no images"), "{err}");
+    }
+
+    fn make_jpeg_with_exif(path: &Path, orientation: Option<u8>, focal: Option<(u32, u32)>) {
+        use image::{ImageBuffer, Rgb};
+        let img = ImageBuffer::from_pixel(4, 2, Rgb([10u8, 20, 30]));
+        let dynimg = image::DynamicImage::ImageRgb8(img);
+        let mut buf = Vec::new();
+        let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 90);
+        enc.encode_image(&dynimg).unwrap();
+        std::fs::write(path, &buf).unwrap();
+
+        let mut metadata = little_exif::metadata::Metadata::new();
+        if let Some(o) = orientation {
+            metadata.set_tag(little_exif::exif_tag::ExifTag::Orientation(vec![o as u16]));
+        }
+        if let Some((n, d)) = focal {
+            metadata.set_tag(little_exif::exif_tag::ExifTag::FocalLength(vec![
+                little_exif::rational::uR64 {
+                    nominator: n,
+                    denominator: d,
+                },
+            ]));
+        }
+        if orientation.is_some() || focal.is_some() {
+            metadata.write_to_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn exif_orientation_defaults_to_one_and_reads_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("a.jpg");
+        make_jpeg_with_exif(&p, None, None);
+        assert_eq!(exif_orientation(&p), 1);
+
+        let p2 = dir.path().join("b.jpg");
+        make_jpeg_with_exif(&p2, Some(6), None);
+        assert_eq!(exif_orientation(&p2), 6);
+    }
+
+    #[test]
+    fn apply_orientation_rotates_and_flips() {
+        use image::{ImageBuffer, Rgb};
+        let base = image::DynamicImage::ImageRgb8(ImageBuffer::from_pixel(4, 2, Rgb([1u8, 2, 3])));
+        // dimensions after apply
+        let cases: &[(u8, u32, u32)] = &[
+            (1, 4, 2),
+            (2, 4, 2),
+            (3, 4, 2),
+            (4, 4, 2),
+            (5, 2, 4),
+            (6, 2, 4),
+            (7, 2, 4),
+            (8, 2, 4),
+        ];
+        for (o, w, h) in cases {
+            let mut img = base.clone();
+            apply_orientation(&mut img, *o);
+            assert_eq!((img.width(), img.height()), (*w, *h), "orientation {o}");
+        }
+    }
+
+    #[test]
+    fn process_photo_preserves_focal_length() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src.jpg");
+        let dest = dir.path().join("dest.jpg");
+        make_jpeg_with_exif(&src, Some(6), Some((50, 1)));
+        process_photo(&src, &dest, Some(100)).unwrap();
+        assert_eq!(exif_focal_length(&dest), Some((50, 1)));
+        // orientation reset to upright in output
+        assert_eq!(exif_orientation(&dest), 1);
+    }
+
+    #[test]
+    fn collect_images_rejects_unsupported_formats() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.tif"), b"x").unwrap();
+        let err = collect_images(dir.path()).unwrap_err();
+        assert!(err.to_string().contains("supported extensions"), "{err}");
+    }
+
+    #[test]
+    fn directory_input_produces_numbered_jpegs() {
+        use shoreline_core::Tools;
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("photos");
+        std::fs::create_dir(&input).unwrap();
+        for name in ["a.jpg", "b.jpg"] {
+            std::fs::copy(fixture("sharp.jpg"), input.join(name)).unwrap();
+        }
+        let mut config = Config::load(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../configs/reposalmi-laajasalo.toml"),
+        )
+        .unwrap();
+        config.dataset.input = input;
+        config.frames.blur_threshold = 0.0;
+        let ctx = RunContext::new(
+            config,
+            Tools::from_table(toml::Table::new()).unwrap(),
+            dir.path(),
+        )
+        .unwrap();
+        let out = dir.path().join("out");
+        std::fs::create_dir(&out).unwrap();
+        let run = Frames.run(&ctx, &Inputs::new(), &out).unwrap();
+        assert!(out.join("images/00001.jpg").is_file());
+        assert!(out.join("images/00002.jpg").is_file());
+        assert!(run.metrics["extracted"] >= 2.0);
     }
 
     /// Need ffmpeg on PATH: `cargo nextest run --profile integration`.
