@@ -75,6 +75,13 @@ pub fn run(
     };
 
     let order: Vec<&str> = order.into_iter().filter(|n| selected.contains(n)).collect();
+    // Every version before any stage runs: a missing or broken tool fails the
+    // run at once, not after the stages before it.
+    let versions = order
+        .iter()
+        .map(|&name| Ok((name, by_name[name].version(ctx)?)))
+        .collect::<Result<BTreeMap<&str, String>>>()?;
+
     let mut outputs: BTreeMap<&str, StageOutput> = BTreeMap::new();
     let mut results = Vec::new();
     for (i, &name) in order.iter().enumerate() {
@@ -89,7 +96,15 @@ pub fn run(
             .map(|&dep| (dep, outputs[dep].clone()))
             .collect();
         let source = stage.deps().is_empty().then_some(&source);
-        let mut result = run_stage(ctx, stage, position, &inputs, source, on_event)?;
+        let mut result = run_stage(
+            ctx,
+            stage,
+            position,
+            &versions[name],
+            &inputs,
+            source,
+            on_event,
+        )?;
         on_event(Event::Finished(&result));
         result.warnings = stage.gate(&ctx.config, &result.metrics)?;
         for message in &result.warnings {
@@ -172,19 +187,19 @@ fn run_stage(
     ctx: &RunContext,
     stage: &dyn Stage,
     position: Position,
+    version: &str,
     inputs: &Inputs,
     source: Option<&Source>,
     on_event: &mut dyn FnMut(Event<'_>),
 ) -> Result<StageResult> {
     let name = stage.name();
     let config = stage.config(&ctx.config);
-    let version = stage.version(ctx)?;
     let upstream: Vec<Fingerprint> = inputs
         .values()
         .map(|o| o.fingerprint)
         .chain(source.map(|s| s.fingerprint))
         .collect();
-    let fingerprint = Fingerprint::compute(name, &config, &upstream, &version);
+    let fingerprint = Fingerprint::compute(name, &config, &upstream, version);
     let dir = ctx.stage_dir(name, &fingerprint);
     let result = |cached, metrics| StageResult {
         stage: name,
@@ -238,7 +253,7 @@ fn run_stage(
         stage: name.to_owned(),
         fingerprint,
         config,
-        version,
+        version: version.to_owned(),
         upstream: inputs
             .iter()
             .map(|(stage, o)| Upstream {
@@ -326,8 +341,11 @@ mod tests {
         fn config(&self, _: &Config) -> serde_json::Value {
             self.config.borrow().clone()
         }
-        fn version(&self, _: &RunContext) -> Result<String> {
-            Ok(self.version.borrow().clone())
+        fn version(&self, ctx: &RunContext) -> Result<String> {
+            match self.version.borrow().as_str() {
+                "missing" => ctx.tools.get(self.name).map(|_| unreachable!()),
+                version => Ok(version.to_owned()),
+            }
         }
         fn run(&self, _: &RunContext, inputs: &Inputs, out_dir: &Path) -> Result<StageRun> {
             self.runs.set(self.runs.get() + 1);
@@ -768,6 +786,21 @@ mod tests {
         s[1].fail.set(false);
         let (_, events) = go(&e.ctx, &s, &[]);
         assert_eq!(events[..3], ["cached a", "discard b", "run b"]);
+    }
+
+    #[test]
+    fn a_missing_tool_fails_before_any_stage_runs() {
+        let e = env();
+        let s = stages();
+        s[2].version.replace("missing".into());
+        let (result, events) = go(&e.ctx, &s, &[]);
+        assert!(matches!(result, Err(Error::Tools(m)) if m.contains("no [c] table")));
+        assert!(events.is_empty());
+        assert_eq!(runs(&s), [0, 0, 0, 0]);
+
+        // Only the selected stages need their tools.
+        go(&e.ctx, &s, &["d"]).0.unwrap();
+        assert_eq!(runs(&s), [1, 0, 0, 1]);
     }
 
     #[test]

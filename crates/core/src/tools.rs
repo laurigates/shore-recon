@@ -553,16 +553,23 @@ impl Tool {
         }
         let mut cmd = self.command(&Invocation::new(probe))?;
         let argv = argv(&cmd);
+        let failed =
+            |why: String| Error::Tools(format!("{}: `{}` {why}", self.name, argv.join(" ")));
         let out = cmd
             .stdin(Stdio::null())
             .stderr(Stdio::null())
             .output()
-            .map_err(|source| Error::Spawn {
-                program: argv[0].clone(),
-                source,
+            .map_err(|source| match source.kind() {
+                std::io::ErrorKind::NotFound => failed(format!(
+                    "did not start: {} is not on PATH. Install it, or give [{}] another \
+                     runtime in a tools.toml (docs/configuration.md)",
+                    argv[0], self.name
+                )),
+                _ => Error::Spawn {
+                    program: argv[0].clone(),
+                    source,
+                },
             })?;
-        let failed =
-            |why: String| Error::Tools(format!("{}: `{}` {why}", self.name, argv.join(" ")));
         if !out.status.success() {
             return Err(failed(format!("exited with {}", out.status)));
         }
@@ -1170,6 +1177,15 @@ mod tests {
     fn version_probe_failure_or_silence_is_an_error() {
         assert!(native("sh").version(&["-c", "exit 1"]).is_err());
         assert!(native("sh").version(&["-c", "true"]).is_err());
+    }
+
+    #[test]
+    fn version_of_a_missing_program_says_how_to_fix_it() {
+        let err = native("shoreline-no-such-tool").version(&[]).unwrap_err();
+        assert!(
+            matches!(&err, Error::Tools(m) if m.contains("shoreline-no-such-tool is not on PATH")),
+            "{err}"
+        );
     }
 
     #[test]
