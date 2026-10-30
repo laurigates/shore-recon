@@ -27,8 +27,8 @@ run does not. Every other frame is at 0.955 or above.
    weights at revision `4a5bac8e64f82681a12db2e151a4c2f4ce6092b2` under `/opt/models/oneformer`.
    The processor's class metadata (`ade20k_panoptic.json`), which it would otherwise download from
    the dataset repo `shi-labs/oneformer_demo` at run time, is baked beside the weights at revision
-   `4d683bd5bf84e9c8b5537dce306230bde409fe89`. Runs are offline. The image is `linux/arm64` for
-   now; an `amd64` CUDA variant for the GPU host comes with the Apptainer runtime (#13).
+   `4d683bd5bf84e9c8b5537dce306230bde409fe89`. Runs are offline. The image is a `linux/arm64` +
+   `linux/amd64` CPU index (amd64 since #89); an `amd64` CUDA variant for the GPU host comes with the Apptainer runtime (#13).
 2. `.github/workflows/containers.yml` builds the image on every change to it and pushes
    `ghcr.io/laurigates/shoreline-segmentation` only from `main`; the QEMU and BuildKit images the
    build uses are pinned by digest. The masks stage pins the digest as the
@@ -55,7 +55,8 @@ run does not. Every other frame is at 0.955 or above.
   --password-stdin`).
 - A rebuild resolves the same package versions; it still yields a new digest (new layers), which
   reruns masks and everything after it.
-- CI builds the arm64 image under QEMU, which is slow but needs no arm64 runner.
+- CI built the arm64 image under QEMU until #89; it now builds each architecture on a native
+  runner and joins them into one index, as for `openmvs-cpu`.
 - On OrbStack, a read-only bind mount (`-v dir:dir:ro`) whose target is under `/Users` shows up
   as a missing directory inside the container; read-write mounts at the same path work (observed
   2026-10-25, Docker 29.4.0). The ToolRunner mounts read-write, so stages are unaffected; manual

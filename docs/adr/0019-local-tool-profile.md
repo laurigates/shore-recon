@@ -62,6 +62,7 @@ Decided by the project owner on 2026-10-30:
   from the CUDA ones, so local and GPU outputs never share a cache entry. ADR-0018's
   estimates still mix both under one work root (#90).
 - `--videos` still needs a `render` tool from a host file; gsplat needs CUDA.
-- On x86_64 Linux the segmentation image (`linux/arm64` only) is the remaining gap (#89).
+- On x86_64 Linux the segmentation image was `linux/arm64` only until #89, which added
+  `linux/amd64` to its index.
 - Bumping Brush means changing `containers/brush/Containerfile` and the tap formula
   together.
