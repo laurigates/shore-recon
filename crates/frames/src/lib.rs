@@ -9,6 +9,7 @@
 pub mod blur;
 pub mod dedup;
 
+use image::GenericImageView;
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -65,14 +66,6 @@ impl Stage for Frames {
         on_event: &mut dyn FnMut(shoreline_core::pipeline::Event<'_>),
     ) -> Result<StageRun> {
         let input = &ctx.config.dataset.input;
-        if input.is_dir() {
-            return Err(stage_error(format!(
-                "{} is a directory; photo-directory input is not implemented yet (#23)",
-                input.display()
-            )));
-        }
-        // Through symlinks, so a container sees the real file under its mount.
-        let input = std::fs::canonicalize(input).map_err(io_error(input))?;
         let images = out_dir.join("images");
         if images.to_string_lossy().contains('%') {
             return Err(stage_error(format!(
@@ -82,6 +75,39 @@ impl Stage for Frames {
             )));
         }
         std::fs::create_dir_all(&images).map_err(io_error(&images))?;
+
+        let threshold = ctx.config.frames.blur_threshold;
+
+        if input.is_dir() {
+            // Photo-directory input (#23): copy/convert each image into images/,
+            // applying EXIF orientation and the long-edge cap.
+            let mut entries = collect_images(input)?;
+            if entries.is_empty() {
+                return Err(stage_error(format!("no images in {}", input.display())));
+            }
+            entries.sort();
+            for (i, src) in entries.iter().enumerate() {
+                let dest = images.join(format!("{:05}.jpg", i + 1));
+                process_photo(src, &dest, ctx.config.frames.max_long_edge)
+                    .map_err(|e| stage_error(format!("{}: {e}", src.display())))?;
+            }
+            let scores = select(&images, &out_dir.join("rejected"), threshold)?;
+            let csv = out_dir.join("frames.csv");
+            std::fs::write(&csv, scores_csv(&scores)).map_err(io_error(&csv))?;
+            if !scores.iter().any(|s| s.kept) {
+                return Err(stage_error(format!(
+                    "no frame reached blur_threshold = {threshold}; scores are in {}",
+                    csv.display()
+                )));
+            }
+            return Ok(StageRun {
+                tools: vec![],
+                metrics: metrics(&scores),
+            });
+        }
+
+        // Through symlinks, so a container sees the real file under its mount.
+        let input = std::fs::canonicalize(input).map_err(io_error(input))?;
 
         let extract = extract_invocation(&input, &images, &ctx.config.frames);
         let record = ctx
@@ -211,6 +237,120 @@ pub fn metrics(scores: &[Score]) -> Metrics {
     .into_iter()
     .map(|(k, v)| (k.to_owned(), v))
     .collect()
+}
+
+/// Collect the image files in a directory (non-recursive), sorted by name.
+pub fn collect_images(dir: &Path) -> Result<Vec<std::path::PathBuf>> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).map_err(io_error(dir))? {
+        let entry = entry.map_err(io_error(dir))?;
+        let path = entry.path();
+        if path.is_file() && is_image(&path) {
+            out.push(path);
+        }
+    }
+    Ok(out)
+}
+
+fn is_image(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .as_deref(),
+        Some("jpg" | "jpeg" | "png" | "tif" | "tiff" | "webp")
+    )
+}
+
+/// EXIF orientation value (1..=8), defaulting to 1 (upright) when absent.
+pub fn exif_orientation(path: &Path) -> u8 {
+    let Ok(file) = std::fs::File::open(path) else {
+        return 1;
+    };
+    let mut reader = std::io::BufReader::new(file);
+    let exif_reader = exif::Reader::new();
+    let Ok(exif) = exif_reader.read_from_container(&mut reader) else {
+        return 1;
+    };
+    if let Some(field) = exif.get_field(exif::Tag::Orientation, exif::In::PRIMARY) {
+        if let exif::Value::Short(vals) = &field.value {
+            if let Some(&v) = vals.first() {
+                return v as u8;
+            }
+        }
+    }
+    1
+}
+
+/// EXIF focal length as (numerator, denominator), if present.
+pub fn exif_focal_length(path: &Path) -> Option<(u32, u32)> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut reader = std::io::BufReader::new(file);
+    let exif_reader = exif::Reader::new();
+    let exif = exif_reader.read_from_container(&mut reader).ok()?;
+    let field = exif.get_field(exif::Tag::FocalLength, exif::In::PRIMARY)?;
+    if let exif::Value::Rational(vals) = &field.value {
+        if let Some(r) = vals.first() {
+            return Some((r.num, r.denom));
+        }
+    }
+    None
+}
+
+/// Apply EXIF orientation to a dynamic image in place.
+pub fn apply_orientation(img: &mut image::DynamicImage, orientation_u8: u8) {
+    if let Some(o) = image::metadata::Orientation::from_exif(orientation_u8) {
+        img.apply_orientation(o);
+    }
+}
+
+/// Copy/convert one photo into `dest` (JPEG), applying EXIF orientation and
+/// the long-edge cap, and preserving the focal length in the output's EXIF.
+pub fn process_photo(src: &Path, dest: &Path, max_long_edge: Option<u32>) -> Result<()> {
+    let orientation_u8 = exif_orientation(src);
+    let focal = exif_focal_length(src);
+
+    let mut img = image::ImageReader::open(src)
+        .map_err(io_error(src))?
+        .with_guessed_format()
+        .map_err(io_error(src))?
+        .decode()
+        .map_err(|e| stage_error(e.to_string()))?;
+    apply_orientation(&mut img, orientation_u8);
+
+    if let Some(limit) = max_long_edge {
+        let (w, h) = img.dimensions();
+        let long = w.max(h);
+        if long > limit {
+            let scale = limit as f64 / long as f64;
+            let nw = ((w as f64) * scale).round().max(1.0) as u32;
+            let nh = ((h as f64) * scale).round().max(1.0) as u32;
+            img = img.resize_exact(nw, nh, image::imageops::FilterType::Lanczos3);
+        }
+    }
+
+    let mut buf = Vec::new();
+    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 95);
+    encoder
+        .encode_image(&img)
+        .map_err(|e| stage_error(e.to_string()))?;
+    std::fs::write(dest, &buf).map_err(io_error(dest))?;
+
+    // Preserve focal length (and mark orientation as applied = 1).
+    let mut metadata = little_exif::metadata::Metadata::new();
+    metadata.set_tag(little_exif::exif_tag::ExifTag::Orientation(vec![1]));
+    if let Some((num, den)) = focal {
+        metadata.set_tag(little_exif::exif_tag::ExifTag::FocalLength(vec![
+            little_exif::rational::uR64 {
+                nominator: num,
+                denominator: den,
+            },
+        ]));
+    }
+    metadata
+        .write_to_file(dest)
+        .map_err(|e| stage_error(e.to_string()))?;
+    Ok(())
 }
 
 pub(crate) fn stage_error(message: impl Into<String>) -> Error {
@@ -552,7 +692,7 @@ mod tests {
     }
 
     #[test]
-    fn directory_input_is_not_supported_yet() {
+    fn directory_input_with_no_images_is_an_error() {
         use shoreline_core::Tools;
         let dir = tempfile::tempdir().unwrap();
         let mut config = Config::load(
@@ -571,7 +711,7 @@ mod tests {
         let err = Frames
             .run(&ctx, &Inputs::new(), &out, &mut |_| {})
             .unwrap_err();
-        assert!(err.to_string().contains("#23"), "{err}");
+        assert!(err.to_string().contains("no images"), "{err}");
     }
 
     /// Need ffmpeg on PATH: `cargo nextest run --profile integration`.
