@@ -118,7 +118,7 @@ share-copy file:
 
 # ---------- gpu host ----------
 
-# Clean stale mirrored mounts (and optionally the Apptainer cache) on the GPU host.
+# Clean stale mirrored mounts on the GPU host.
 # Dry run by default; pass --apply to delete. See scripts/clean_remote.py.
 [group('gpu')]
 clean-remote *args:

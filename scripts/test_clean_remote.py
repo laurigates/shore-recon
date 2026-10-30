@@ -1,11 +1,7 @@
-import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
-
-sys_path = None
-import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import clean_remote
@@ -58,6 +54,16 @@ class TestPruneCacheCandidates(unittest.TestCase):
         # neither references digest -> both candidates (heuristic)
         res = clean_remote.prune_cache_candidates(files, digests)
         self.assertEqual(res, files)
+
+    def test_retains_referenced_digest(self):
+        files = ["/c/deadbeef1234.sif", "/c/other.sif"]
+        digests = {"sha256:deadbeef"}
+        # the entry whose name contains the referenced digest is kept;
+        # the other is a candidate.
+        res = clean_remote.prune_cache_candidates(files, digests)
+        self.assertEqual(res, ["/c/other.sif"])
+        # inversion check: the retained entry must not appear in candidates
+        self.assertNotIn("/c/deadbeef1234.sif", res)
 
 
 if __name__ == "__main__":
