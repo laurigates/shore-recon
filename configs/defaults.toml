@@ -4,6 +4,7 @@
 fps            = 2.0
 blur_threshold = 100.0     # variance of Laplacian; lower is blurrier
 max_long_edge  = 3200
+dedup_threshold = 8        # max Hamming distance between 8x8 perceptual hashes
 
 [masks]
 backend   = "container"   # OneFormer image, the segment tool in tools.toml (ADR-0006); "onnx" is #11

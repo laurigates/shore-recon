@@ -7,6 +7,7 @@
 //! `frames.csv` (every frame's score), `logs/ffmpeg.log`.
 
 pub mod blur;
+pub mod dedup;
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -22,7 +23,7 @@ pub const NAME: &str = "frames";
 const LOG: &str = "ffmpeg";
 
 /// Bump when the output changes for the same config, input and ffmpeg.
-const REVISION: u32 = 2;
+const REVISION: u32 = 3;
 
 pub struct Frames;
 
@@ -93,12 +94,19 @@ impl Stage for Frames {
         });
 
         let threshold = ctx.config.frames.blur_threshold;
-        let scores = select(&images, &out_dir.join("rejected"), threshold)?;
+        let mut scores = select(&images, &out_dir.join("rejected"), threshold)?;
         let kept = scores.iter().filter(|s| s.kept).count();
         on_event(shoreline_core::pipeline::Event::Step {
             stage: NAME,
             message: &format!("scored {} frames, kept {}", scores.len(), kept),
         });
+        let dedup_threshold = ctx.config.frames.dedup_threshold;
+        let dropped = dedup::drop_duplicates(&images, &out_dir.join("rejected"), dedup_threshold)?;
+        for s in scores.iter_mut() {
+            if dropped.iter().any(|d| d == &s.image) {
+                s.kept = false;
+            }
+        }
         let csv = out_dir.join("frames.csv");
         std::fs::write(&csv, scores_csv(&scores)).map_err(io_error(&csv))?;
         if !scores.iter().any(|s| s.kept) {
@@ -221,6 +229,7 @@ mod tests {
             fps: 2.0,
             blur_threshold: 100.0,
             max_long_edge,
+            dedup_threshold: 8,
         }
     }
 
@@ -366,10 +375,11 @@ mod tests {
         let config = repo_config();
         let base = Frames.config(&config);
         assert_eq!(base, serde_json::to_value(&config.frames).unwrap());
-        let changes: [fn(&mut FramesConfig); 3] = [
+        let changes: [fn(&mut FramesConfig); 4] = [
             |f| f.fps = 3.0,
             |f| f.blur_threshold = 150.0,
             |f| f.max_long_edge = Some(1600),
+            |f| f.dedup_threshold = 16,
         ];
         for change in changes {
             let mut changed = config.clone();
@@ -438,7 +448,7 @@ mod tests {
         let ctx = stub_context(dir.path(), &[]);
         assert_eq!(
             Frames.version(&ctx).unwrap(),
-            "frames/2 ffmpeg version STUB-1"
+            "frames/3 ffmpeg version STUB-1"
         );
     }
 
