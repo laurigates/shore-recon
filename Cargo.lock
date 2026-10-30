@@ -651,7 +651,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "shoreline-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "blake3",
  "rustix",
@@ -664,7 +664,7 @@ dependencies = [
 
 [[package]]
 name = "shoreline-dense"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde_json",
  "shoreline-core",
@@ -675,7 +675,7 @@ dependencies = [
 
 [[package]]
 name = "shoreline-export"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -687,7 +687,7 @@ dependencies = [
 
 [[package]]
 name = "shoreline-frames"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde_json",
  "shoreline-core",
@@ -699,7 +699,7 @@ dependencies = [
 
 [[package]]
 name = "shoreline-masks"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "image",
  "serde_json",
@@ -710,7 +710,7 @@ dependencies = [
 
 [[package]]
 name = "shoreline-post"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "gltf",
  "image",
@@ -725,7 +725,7 @@ dependencies = [
 
 [[package]]
 name = "shoreline-recon"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -745,7 +745,7 @@ dependencies = [
 
 [[package]]
 name = "shoreline-sfm"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "image",
  "serde_json",
@@ -756,7 +756,7 @@ dependencies = [
 
 [[package]]
 name = "shoreline-splat"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde_json",
  "shoreline-core",
@@ -767,7 +767,7 @@ dependencies = [
 
 [[package]]
 name = "shoreline-video"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde_json",
  "shoreline-core",

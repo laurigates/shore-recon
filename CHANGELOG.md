@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.3.0](https://github.com/laurigates/shore-recon/compare/v0.2.0...v0.3.0) (2026-10-30)
+
+
+### Features
+
+* check tools before the first stage and add a CPU OpenMVS image ([#88](https://github.com/laurigates/shore-recon/issues/88)) ([3f58dc1](https://github.com/laurigates/shore-recon/commit/3f58dc14b99d9c90113bbb67d29d4d8b4c9004d9))
+* show run progress, estimates from history and a summary ([#86](https://github.com/laurigates/shore-recon/issues/86)) ([1d3ce4e](https://github.com/laurigates/shore-recon/commit/1d3ce4eee1d7c926ad1a290e012871326654b745))
+* **tools:** run every stage but the videos locally by default ([#91](https://github.com/laurigates/shore-recon/issues/91)) ([079d5ca](https://github.com/laurigates/shore-recon/commit/079d5ca547f30914f60c58e97afc5e102073402e))
+
+
+### Bug Fixes
+
+* **containers:** pin the Python images with uv projects ([#84](https://github.com/laurigates/shore-recon/issues/84)) ([bac5c8e](https://github.com/laurigates/shore-recon/commit/bac5c8e99f30123372883cbc074cbacb575871d7)), closes [#83](https://github.com/laurigates/shore-recon/issues/83)
+
 ## [0.2.0](https://github.com/laurigates/shore-recon/compare/v0.1.0...v0.2.0) (2026-10-29)
 
 
