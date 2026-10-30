@@ -432,6 +432,29 @@ mod tests {
     }
 
     #[test]
+    fn run_emits_step_events_with_collecting_sink() {
+        let dir = tempfile::tempdir().unwrap();
+        let (ctx, inputs, out) = setup(dir.path(), &["sharp", "soft", "near_keep"], &[]);
+        let mut events: Vec<(String, String)> = Vec::new();
+        let run = Masks
+            .run(&ctx, &inputs, &out, &mut |ev| {
+                if let shoreline_core::pipeline::Event::Step { stage, message } = ev {
+                    events.push((stage.to_string(), message.to_string()));
+                }
+            })
+            .unwrap();
+
+        assert_eq!(run.metrics["frames"], 3.0);
+        assert_eq!(
+            events,
+            vec![
+                ("masks".to_string(), "segmented frames".to_string()),
+                ("masks".to_string(), "processed 3 frames".to_string()),
+            ]
+        );
+    }
+
+    #[test]
     fn dilation_follows_masks_dilate_px() {
         let dir = tempfile::tempdir().unwrap();
         let mut config = repo_config();
