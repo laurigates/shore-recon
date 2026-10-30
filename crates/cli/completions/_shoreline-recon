@@ -1,0 +1,217 @@
+#compdef shoreline-recon
+
+autoload -U is-at-least
+
+_shoreline-recon() {
+    typeset -A opt_args
+    typeset -a _arguments_options
+    local ret=1
+
+    if is-at-least 5.2; then
+        _arguments_options=(-s -S -C)
+    else
+        _arguments_options=(-s -C)
+    fi
+
+    local context curcontext="$curcontext" state line
+    _arguments "${_arguments_options[@]}" : \
+'--tools=[Host tools file; its tables replace those of every other tools layer]:TOOLS:_files' \
+'--work=[Root of the stage cache\: outputs go to <work>/<dataset>/<stage>/<fingerprint>/. Default\: ./work for subcommands, the user cache directory for a video]:WORK:_files' \
+'-o+[Output directory for the deliverables. Default\: ./<name>-recon]:OUT:_files' \
+'--out=[Output directory for the deliverables. Default\: ./<name>-recon]:OUT:_files' \
+'--name=[Dataset name (cache directory and report). Default\: the video'\''s file stem]:NAME:_default' \
+'--fps=[Frames extracted per second of video (frames.fps)]:FPS:_default' \
+'--steps=[Splat training steps (splat.steps)]:STEPS:_default' \
+'--matcher=[Feature matcher (sfm.matcher)]:MATCHER:(sequential exhaustive)' \
+'--config=[Partial config (any keys of defaults.toml), merged over the defaults]:CONFIG:_files' \
+'--videos[Also render the showcase and processing-step videos (export.videos)]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+'-V[Print version]' \
+'--version[Print version]' \
+'::video -- Video to reconstruct:_files' \
+":: :_shoreline-recon_commands" \
+"*::: :->shoreline-recon" \
+&& ret=0
+    case $state in
+    (shoreline-recon)
+        words=($line[2] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:shoreline-recon-command-$line[2]:"
+        case $line[2] in
+            (run)
+_arguments "${_arguments_options[@]}" : \
+'*--stage=[Run only this stage and what it depends on (repeatable)]:STAGES:_default' \
+'--tools=[Host tools file; its tables replace those of every other tools layer]:TOOLS:_files' \
+'--work=[Root of the stage cache\: outputs go to <work>/<dataset>/<stage>/<fingerprint>/. Default\: ./work for subcommands, the user cache directory for a video]:WORK:_files' \
+'-h[Print help]' \
+'--help[Print help]' \
+':config:_files' \
+&& ret=0
+;;
+(config)
+_arguments "${_arguments_options[@]}" : \
+'--tools=[Host tools file; its tables replace those of every other tools layer]:TOOLS:_files' \
+'--work=[Root of the stage cache\: outputs go to <work>/<dataset>/<stage>/<fingerprint>/. Default\: ./work for subcommands, the user cache directory for a video]:WORK:_files' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::config:_files' \
+&& ret=0
+;;
+(plan)
+_arguments "${_arguments_options[@]}" : \
+'--tools=[Host tools file; its tables replace those of every other tools layer]:TOOLS:_files' \
+'--work=[Root of the stage cache\: outputs go to <work>/<dataset>/<stage>/<fingerprint>/. Default\: ./work for subcommands, the user cache directory for a video]:WORK:_files' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::config:_files' \
+&& ret=0
+;;
+(tools)
+_arguments "${_arguments_options[@]}" : \
+'--tools=[Host tools file; its tables replace those of every other tools layer]:TOOLS:_files' \
+'--work=[Root of the stage cache\: outputs go to <work>/<dataset>/<stage>/<fingerprint>/. Default\: ./work for subcommands, the user cache directory for a video]:WORK:_files' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::config:_files' \
+&& ret=0
+;;
+(completions)
+_arguments "${_arguments_options[@]}" : \
+'--tools=[Host tools file; its tables replace those of every other tools layer]:TOOLS:_files' \
+'--work=[Root of the stage cache\: outputs go to <work>/<dataset>/<stage>/<fingerprint>/. Default\: ./work for subcommands, the user cache directory for a video]:WORK:_files' \
+'-h[Print help]' \
+'--help[Print help]' \
+':shell:(bash elvish fish powershell zsh)' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_shoreline-recon__subcmd__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:shoreline-recon-help-command-$line[1]:"
+        case $line[1] in
+            (run)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(config)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(plan)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(tools)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(completions)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+}
+
+(( $+functions[_shoreline-recon_commands] )) ||
+_shoreline-recon_commands() {
+    local commands; commands=(
+'run:Run the implemented stages for a dataset config. Relative paths in the config are resolved against the working directory' \
+'config:Print the resolved config\: built-in defaults, the user'\''s config.toml, defaults.toml beside the config, the config. Without a config, the defaults with a placeholder dataset' \
+'plan:Print the stage execution order' \
+'tools:Print the resolved tools\: built-in, the user'\''s tools.toml, tools.toml beside the config, then --tools' \
+'completions:Print the completion script for a shell, e.g. \`eval "\$(shoreline-recon completions zsh)"\` in ~/.zshrc' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'shoreline-recon commands' commands "$@"
+}
+(( $+functions[_shoreline-recon__subcmd__completions_commands] )) ||
+_shoreline-recon__subcmd__completions_commands() {
+    local commands; commands=()
+    _describe -t commands 'shoreline-recon completions commands' commands "$@"
+}
+(( $+functions[_shoreline-recon__subcmd__config_commands] )) ||
+_shoreline-recon__subcmd__config_commands() {
+    local commands; commands=()
+    _describe -t commands 'shoreline-recon config commands' commands "$@"
+}
+(( $+functions[_shoreline-recon__subcmd__help_commands] )) ||
+_shoreline-recon__subcmd__help_commands() {
+    local commands; commands=(
+'run:Run the implemented stages for a dataset config. Relative paths in the config are resolved against the working directory' \
+'config:Print the resolved config\: built-in defaults, the user'\''s config.toml, defaults.toml beside the config, the config. Without a config, the defaults with a placeholder dataset' \
+'plan:Print the stage execution order' \
+'tools:Print the resolved tools\: built-in, the user'\''s tools.toml, tools.toml beside the config, then --tools' \
+'completions:Print the completion script for a shell, e.g. \`eval "\$(shoreline-recon completions zsh)"\` in ~/.zshrc' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'shoreline-recon help commands' commands "$@"
+}
+(( $+functions[_shoreline-recon__subcmd__help__subcmd__completions_commands] )) ||
+_shoreline-recon__subcmd__help__subcmd__completions_commands() {
+    local commands; commands=()
+    _describe -t commands 'shoreline-recon help completions commands' commands "$@"
+}
+(( $+functions[_shoreline-recon__subcmd__help__subcmd__config_commands] )) ||
+_shoreline-recon__subcmd__help__subcmd__config_commands() {
+    local commands; commands=()
+    _describe -t commands 'shoreline-recon help config commands' commands "$@"
+}
+(( $+functions[_shoreline-recon__subcmd__help__subcmd__help_commands] )) ||
+_shoreline-recon__subcmd__help__subcmd__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'shoreline-recon help help commands' commands "$@"
+}
+(( $+functions[_shoreline-recon__subcmd__help__subcmd__plan_commands] )) ||
+_shoreline-recon__subcmd__help__subcmd__plan_commands() {
+    local commands; commands=()
+    _describe -t commands 'shoreline-recon help plan commands' commands "$@"
+}
+(( $+functions[_shoreline-recon__subcmd__help__subcmd__run_commands] )) ||
+_shoreline-recon__subcmd__help__subcmd__run_commands() {
+    local commands; commands=()
+    _describe -t commands 'shoreline-recon help run commands' commands "$@"
+}
+(( $+functions[_shoreline-recon__subcmd__help__subcmd__tools_commands] )) ||
+_shoreline-recon__subcmd__help__subcmd__tools_commands() {
+    local commands; commands=()
+    _describe -t commands 'shoreline-recon help tools commands' commands "$@"
+}
+(( $+functions[_shoreline-recon__subcmd__plan_commands] )) ||
+_shoreline-recon__subcmd__plan_commands() {
+    local commands; commands=()
+    _describe -t commands 'shoreline-recon plan commands' commands "$@"
+}
+(( $+functions[_shoreline-recon__subcmd__run_commands] )) ||
+_shoreline-recon__subcmd__run_commands() {
+    local commands; commands=()
+    _describe -t commands 'shoreline-recon run commands' commands "$@"
+}
+(( $+functions[_shoreline-recon__subcmd__tools_commands] )) ||
+_shoreline-recon__subcmd__tools_commands() {
+    local commands; commands=()
+    _describe -t commands 'shoreline-recon tools commands' commands "$@"
+}
+
+if [ "$funcstack[1]" = "_shoreline-recon" ]; then
+    _shoreline-recon "$@"
+else
+    compdef _shoreline-recon shoreline-recon
+fi

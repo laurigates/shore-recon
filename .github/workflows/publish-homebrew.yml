@@ -58,6 +58,11 @@ jobs:
             name="${filename%.rb}"
             version=$(echo "$release" | jq .app_version --raw-output)
 
+            # dist's formula installs only the binary; have Homebrew install the
+            # completions from it. Fail if dist's template no longer matches.
+            sed -i 's|^    install_binary_aliases!$|&\n\n    generate_completions_from_executable(bin/"shoreline-recon", "completions")|' "Formula/${filename}"
+            grep -q generate_completions_from_executable "Formula/${filename}"
+
             export PATH="/home/linuxbrew/.linuxbrew/bin:$PATH"
             brew update
             # We avoid reformatting user-provided data such as the app description and homepage.

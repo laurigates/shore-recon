@@ -99,6 +99,20 @@ shoreline-recon tools configs/pier.toml              # the resolved tools
 deliverables are in `work/<dataset>/export/<fingerprint>/`. Unknown keys are rejected.
 How configs and tools are layered: [configuration.md](configuration.md).
 
+## Shell completions
+
+The Homebrew formula installs completions for bash, zsh and fish. With any other install,
+load them from the binary in the shell's startup file:
+
+```sh
+eval "$(shoreline-recon completions bash)"     # ~/.bashrc
+eval "$(shoreline-recon completions zsh)"      # ~/.zshrc, after compinit
+shoreline-recon completions fish | source      # ~/.config/fish/config.fish
+```
+
+`completions` also takes `elvish` and `powershell`. The release archives carry the
+bash, zsh and fish scripts in `completions/`, for copying into a completion directory.
+
 ## Recipes in a checkout
 
 `just --list` shows every recipe. The main ones:

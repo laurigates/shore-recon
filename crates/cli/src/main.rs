@@ -3,7 +3,8 @@ mod progress;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
+use clap_complete::Shell;
 use shoreline_core::pipeline::{self, StageResult};
 use shoreline_core::{Config, RunContext, Stage, Tools, dag, dirs};
 use shoreline_dense::Dense;
@@ -84,6 +85,19 @@ enum Command {
     /// Print the resolved tools: built-in, the user's tools.toml, tools.toml
     /// beside the config, then --tools.
     Tools { config: Option<PathBuf> },
+    /// Print the completion script for a shell, e.g.
+    /// `eval "$(shoreline-recon completions zsh)"` in ~/.zshrc.
+    Completions { shell: Shell },
+}
+
+/// The binary name the completion scripts complete.
+const BIN: &str = "shoreline-recon";
+
+/// The completion script for `shell`.
+fn completions(shell: Shell) -> Vec<u8> {
+    let mut script = Vec::new();
+    clap_complete::generate(shell, &mut Cli::command(), BIN, &mut script);
+    script
 }
 
 /// The stages for `config`, in pipeline order; `run` refuses targets outside
@@ -322,6 +336,9 @@ fn main() -> Result<()> {
             let tools = load_tools(config.as_deref(), cli.tools.as_deref())?;
             print!("{}", toml::to_string_pretty(&tools)?);
         }
+        Command::Completions { shell } => {
+            std::io::Write::write_all(&mut std::io::stdout(), &completions(shell))?;
+        }
         Command::Run { config, stages } => {
             let tools = load_tools(Some(&config), cli.tools.as_deref())?;
             let ctx = RunContext::new(load(Some(&config))?, tools, &work)?;
@@ -382,8 +399,32 @@ mod tests {
 
     #[test]
     fn cli_definition_is_consistent() {
-        use clap::CommandFactory;
         Cli::command().debug_assert();
+    }
+
+    /// The scripts in completions/ ship in the release archives (dist `include`);
+    /// regenerate them with `just completions` after changing the CLI.
+    #[test]
+    fn shipped_completions_match_the_cli() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("completions");
+        for (shell, file) in [
+            (Shell::Bash, "shoreline-recon.bash"),
+            (Shell::Zsh, "_shoreline-recon"),
+            (Shell::Fish, "shoreline-recon.fish"),
+        ] {
+            let shipped = std::fs::read(dir.join(file)).unwrap_or_default();
+            assert!(
+                shipped == completions(shell),
+                "completions/{file} is out of date with the CLI: run `just completions`"
+            );
+        }
+    }
+
+    #[test]
+    fn completions_take_a_shell() {
+        Cli::try_parse_from(["shoreline-recon", "completions", "zsh"]).unwrap();
+        assert!(Cli::try_parse_from(["shoreline-recon", "completions"]).is_err());
+        assert!(Cli::try_parse_from(["shoreline-recon", "completions", "cmd"]).is_err());
     }
 
     #[test]
