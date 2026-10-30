@@ -561,7 +561,7 @@ impl Tool {
             .output()
             .map_err(|source| match source.kind() {
                 std::io::ErrorKind::NotFound => failed(format!(
-                    "did not start: {} is not on PATH. Install it, or give [{}] another \
+                    "did not start: {} was not found. Install it, or give [{}] another \
                      runtime in a tools.toml (docs/configuration.md)",
                     argv[0], self.name
                 )),
@@ -1183,7 +1183,7 @@ mod tests {
     fn version_of_a_missing_program_says_how_to_fix_it() {
         let err = native("shoreline-no-such-tool").version(&[]).unwrap_err();
         assert!(
-            matches!(&err, Error::Tools(m) if m.contains("shoreline-no-such-tool is not on PATH")),
+            matches!(&err, Error::Tools(m) if m.contains("shoreline-no-such-tool was not found")),
             "{err}"
         );
     }
