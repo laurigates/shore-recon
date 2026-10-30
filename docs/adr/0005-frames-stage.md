@@ -32,8 +32,13 @@ the `ToolRunner` (ADR-0003), and the pipeline owns caching (ADR-0004).
    `kept_ratio`. A run that keeps no frame fails the stage.
 4. The stage version is `frames/<revision> <ffmpeg version>`: the first line of `ffmpeg -version`
    for a native ffmpeg, the pinned image reference for a container (ADR-0003).
-5. Video input only for now. A directory input is an error that points to #23 (photo input);
-   near-duplicate dropping is #10.
+5. Photo-directory input is supported (issue #23): each image is decoded with the `image`
+   crate, its EXIF orientation (read via `kamadak-exif`) is applied to the pixels, the long
+   edge is capped by `max_long_edge`, and the result is written as a numbered JPEG with the
+   EXIF focal length preserved (written via `little_exif`). The blur filter then runs exactly
+   as for video frames. ffmpeg is not invoked for a photo directory, so `Frames::version`
+   omits the ffmpeg version string in that case and `steps()` is empty. Video input continues
+   to use ffmpeg as in decision 1. Near-duplicate dropping is #10.
 
 ## Consequences
 
