@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Clean stale mirrors and Apptainer cache entries on a GPU host (issue #42).
+"""Clean stale mirror directories on a GPU host (issue #42).
 
 The local ``work/`` tree is the source of truth: any mirrored mount directory
 under a tools file's ``remote.root`` whose corresponding local path no longer
-exists is stale and can be removed.  SIF/cache entries whose digest is not
-referenced by any tool in the tools file can optionally be pruned too.
+exists is stale and can be removed.
+
+Apptainer's own image cache is left to ``apptainer cache clean`` on the host;
+its entries are named by content hash rather than the image digests a tools
+file references, so they cannot be pruned safely from here.
 
 By default this is a dry run that only lists what it would delete.  Pass
 ``--apply`` to actually delete.
@@ -37,17 +40,6 @@ def remote_configs(tools: dict) -> list[dict]:
         if isinstance(remote, dict):
             out.append({"tool": name, **remote})
     return out
-
-
-def referenced_digests(tools: dict) -> set[str]:
-    digests: set[str] = set()
-    for spec in tools.values():
-        if not isinstance(spec, dict):
-            continue
-        image = spec.get("image")
-        if isinstance(image, str) and "@" in image:
-            digests.add(image.rsplit("@", 1)[-1])
-    return digests
 
 
 SSH_TIMEOUT = 60
@@ -123,38 +115,10 @@ def topmost_missing(remote_dirs: Iterable[str], root: str, work_root: Path) -> l
     return sorted(result)
 
 
-def list_remote_cache_files(host: str, cache_dir: str) -> list[str]:
-    cmd = f"find {shlex.quote(cache_dir)} -type f -print 2>/dev/null"
-    res = ssh(host, cmd)
-    if res.returncode != 0:
-        return []
-    return [line for line in res.stdout.splitlines() if line.strip()]
-
-
-def prune_cache_candidates(cache_files: Iterable[str], digests: set[str]) -> list[str]:
-    """Cache files not referencing any digest used by the tools file.
-
-    A cache entry is retained when its path contains (or contains a short
-    prefix of) a digest referenced by some tool; every other entry is a
-    candidate for pruning.  The match is deliberately by substring so that
-    both full digests and Apptainer's truncated cache names are handled.
-    """
-    short = {d.split(":")[-1][:12] for d in digests if d}
-    out = []
-    for f in cache_files:
-        if any(d in f or s in f for d in digests for s in short):
-            continue
-        out.append(f)
-    return sorted(out)
-
-
 def run_cleanup(
     host: str,
     root: str,
     work_root: Path,
-    cache_dir: str | None,
-    digests: set[str],
-    prune_cache: bool,
     apply: bool,
     dry_run: bool,
 ) -> int:
@@ -173,24 +137,12 @@ def run_cleanup(
         print(f"  {d}")
     print()
 
-    cache_to_delete: list[str] = []
-    if prune_cache and cache_dir:
-        print(f"Apptainer cache: {cache_dir}")
-        files = list_remote_cache_files(host, cache_dir)
-        cache_to_delete = prune_cache_candidates(files, digests)
-        print("Stale cache entries:")
-        if not cache_to_delete:
-            print("  (none)")
-        for f in cache_to_delete:
-            print(f"  {f}")
-        print()
-
     if dry_run or not apply:
         print("Dry run: no changes made. Pass --apply to delete.")
         return 0
 
     # Apply deletions.
-    all_targets = to_delete + cache_to_delete
+    all_targets = to_delete
     if not all_targets:
         print("Nothing to delete.")
         return 0
@@ -227,7 +179,6 @@ def main(argv: list[str] | None = None) -> int:
         print("no remote tools configured in tools file", file=sys.stderr)
         return 2
 
-    digests = referenced_digests(tools)
     work_root = Path(args.work)
     dry_run = args.dry_run or not args.apply
 
@@ -254,9 +205,6 @@ def main(argv: list[str] | None = None) -> int:
             host=host,
             root=str(root),
             work_root=work_root,
-            cache_dir=None,
-            digests=digests,
-            prune_cache=False,
             apply=args.apply,
             dry_run=dry_run,
         )
