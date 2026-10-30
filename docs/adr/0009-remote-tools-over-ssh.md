@@ -45,7 +45,7 @@ single tools on the remote host.
   input transfers nothing.
 - Outputs are pulled back only after a successful run. A failed remote run leaves its partial
   outputs under `root`, and the next push with `--delete` replaces them.
-- Mirrored inputs stay on the host under `root` until someone deletes them.
+- Mirrored inputs stay on the host under `root` until someone deletes them. The `just clean-remote` recipe (dry run by default) lists and removes mirror directories with no matching stage directory under the local `work/`, and optionally prunes Apptainer cache entries for digests no tools file references.
 - A remote native tool (the Brush release binary, per ADR-0002) would need argument translation
   and is not supported. Brush runs from an image, or this ADR is extended.
 - The host needs `rsync`, `ssh` key access in batch mode, and the container runtime named in the
