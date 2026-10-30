@@ -466,6 +466,30 @@ mod tests {
     }
 
     #[test]
+    fn run_emits_step_events_with_collecting_sink() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = stub_context(dir.path(), &["sharp", "near_drop", "near_keep"]);
+        let out = out_dir(dir.path(), "out");
+        let mut events: Vec<(String, String)> = Vec::new();
+        let run = Frames
+            .run(&ctx, &Inputs::new(), &out, &mut |ev| {
+                if let shoreline_core::pipeline::Event::Step { stage, message } = ev {
+                    events.push((stage.to_string(), message.to_string()));
+                }
+            })
+            .unwrap();
+
+        assert_eq!(run.metrics["extracted"], 3.0);
+        assert_eq!(
+            events,
+            vec![
+                ("frames".to_string(), "extracted frames".to_string()),
+                ("frames".to_string(), "scored 3 frames, kept 2".to_string()),
+            ]
+        );
+    }
+
+    #[test]
     fn run_that_keeps_nothing_fails_naming_the_threshold() {
         let dir = tempfile::tempdir().unwrap();
         let ctx = stub_context(dir.path(), &["near_drop", "blurry"]);
