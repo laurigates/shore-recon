@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/laurigates/shore-recon/compare/v0.4.0...v0.5.0) (2026-10-30)
+
+
+### Features
+
+* **cli:** generate and ship shell completions ([#96](https://github.com/laurigates/shore-recon/issues/96)) ([9fea1f6](https://github.com/laurigates/shore-recon/commit/9fea1f6400b2d9efeb590e1949a0258ffa947e69))
+
 ## [0.4.0](https://github.com/laurigates/shore-recon/compare/v0.3.0...v0.4.0) (2026-10-30)
 
 
