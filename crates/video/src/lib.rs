@@ -348,7 +348,13 @@ impl Stage for VideoStage {
         videos.chain(clips).map(|name| log_stem(&name)).collect()
     }
 
-    fn run(&self, ctx: &RunContext, inputs: &Inputs, out_dir: &Path) -> Result<StageRun> {
+    fn run(
+        &self,
+        ctx: &RunContext,
+        inputs: &Inputs,
+        out_dir: &Path,
+        _on_event: &mut dyn FnMut(shoreline_core::pipeline::Event<'_>),
+    ) -> Result<StageRun> {
         let splat = &inputs[SPLAT].dir;
         let post_dir = &inputs[POST].dir;
         let sparse = splat.join("dataset/sparse/0");

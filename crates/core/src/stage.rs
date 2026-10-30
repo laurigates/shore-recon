@@ -71,8 +71,15 @@ pub trait Stage {
     /// of other files it reads by path (for example model weights).
     fn version(&self, ctx: &RunContext) -> Result<String>;
     /// Write outputs into `out_dir`, which is absolute, exists and is empty.
-    /// Tool logs must be written below it.
-    fn run(&self, ctx: &RunContext, inputs: &Inputs, out_dir: &Path) -> Result<StageRun>;
+    /// Tool logs must be written below it. `on_event` receives progress
+    /// events emitted while the stage runs (ADR-0018 / #21).
+    fn run(
+        &self,
+        ctx: &RunContext,
+        inputs: &Inputs,
+        out_dir: &Path,
+        on_event: &mut dyn FnMut(crate::pipeline::Event<'_>),
+    ) -> Result<StageRun>;
     /// Quality gates on the recorded metrics: `Err` fails the run, `Ok`
     /// carries warnings. Evaluated on every run, cached or not, so changed
     /// thresholds apply to cached outputs.

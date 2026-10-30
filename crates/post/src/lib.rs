@@ -231,7 +231,13 @@ impl Stage for Post {
         Ok(format!("{NAME}/{REVISION}"))
     }
 
-    fn run(&self, ctx: &RunContext, inputs: &Inputs, out_dir: &Path) -> Result<StageRun> {
+    fn run(
+        &self,
+        ctx: &RunContext,
+        inputs: &Inputs,
+        out_dir: &Path,
+        _on_event: &mut dyn FnMut(shoreline_core::pipeline::Event<'_>),
+    ) -> Result<StageRun> {
         let config = &ctx.config.post;
         let model = Model::read_binary(&inputs[SFM].dir.join("sparse/0"))?;
         let (plane, height, tilt) = water_plane(&model, &inputs[MASKS].dir.join("masks"), config)?;

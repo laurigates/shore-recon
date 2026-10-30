@@ -149,6 +149,9 @@ impl Reporter {
             Event::Warning { stage, message } => {
                 self.print(&format!("{stage}: warning: {message}"));
             }
+            Event::Step { stage, message } => {
+                self.print(&format!("{stage}: {message}"));
+            }
         }
     }
 

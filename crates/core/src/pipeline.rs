@@ -48,6 +48,11 @@ pub enum Event<'a> {
         estimate: Option<Estimate>,
     },
     Finished(&'a StageResult),
+    /// A sub-step reported by a running stage.
+    Step {
+        stage: &'static str,
+        message: &'a str,
+    },
     /// A gate passed with a warning (reported after `Finished`).
     Warning {
         stage: &'static str,
@@ -231,7 +236,7 @@ fn run_stage(
     });
 
     let started = Instant::now();
-    let run = stage.run(ctx, inputs, &dir)?;
+    let run = stage.run(ctx, inputs, &dir, on_event)?;
     let seconds = started.elapsed().as_secs_f64();
     // Logs relative to the output, so they resolve after the tree is copied.
     let tools = run
@@ -347,7 +352,13 @@ mod tests {
                 version => Ok(version.to_owned()),
             }
         }
-        fn run(&self, _: &RunContext, inputs: &Inputs, out_dir: &Path) -> Result<StageRun> {
+        fn run(
+            &self,
+            _: &RunContext,
+            inputs: &Inputs,
+            out_dir: &Path,
+            _on_event: &mut dyn FnMut(Event<'_>),
+        ) -> Result<StageRun> {
             self.runs.set(self.runs.get() + 1);
             assert!(
                 fs::read_dir(out_dir).unwrap().next().is_none(),
@@ -448,6 +459,7 @@ mod tests {
                 Event::Finished(r) if r.cached => format!("cached {}", r.stage),
                 Event::Finished(r) => format!("done {}", r.stage),
                 Event::Warning { stage, message } => format!("warn {stage}: {message}"),
+                Event::Step { stage, message } => format!("step {stage}: {message}"),
             })
         });
         (result, events)
@@ -817,5 +829,60 @@ mod tests {
         e.ctx.config.gates.min_registered_ratio = 0.4;
         go(&e.ctx, &s, &[]).0.unwrap();
         assert_eq!(runs(&s), [1, 1, 1, 1]);
+    }
+    struct Stepper;
+
+    impl Stage for Stepper {
+        fn name(&self) -> &'static str {
+            "step"
+        }
+        fn deps(&self) -> &[&'static str] {
+            &[]
+        }
+        fn config(&self, _: &Config) -> serde_json::Value {
+            serde_json::json!({"n": 1})
+        }
+        fn version(&self, _: &RunContext) -> Result<String> {
+            Ok("1".into())
+        }
+        fn run(
+            &self,
+            _: &RunContext,
+            _: &Inputs,
+            out_dir: &Path,
+            on_event: &mut dyn FnMut(Event<'_>),
+        ) -> Result<StageRun> {
+            std::fs::write(out_dir.join("out.txt"), "step").unwrap();
+            on_event(Event::Step {
+                stage: "step",
+                message: "working",
+            });
+            Ok(StageRun::default())
+        }
+    }
+
+    #[test]
+    fn step_events_arrive_between_running_and_finished() {
+        let e = env();
+        // Stepper is a root stage; reuse env config. Need a stage list.
+        let stepper = Stepper;
+        let stages: [&dyn Stage; 1] = [&stepper];
+        let mut events = Vec::new();
+        run(&e.ctx, &stages, &[], &mut |ev| {
+            events.push(match ev {
+                Event::Running { stage, .. } => format!("run {stage}"),
+                Event::Step { stage, message } => format!("step {stage}: {message}"),
+                Event::Finished(r) => format!("done {}", r.stage),
+                _ => String::new(),
+            })
+        })
+        .unwrap();
+        let run_pos = events.iter().position(|e| e == "run step").unwrap();
+        let step_pos = events
+            .iter()
+            .position(|e| e == "step step: working")
+            .unwrap();
+        let done_pos = events.iter().position(|e| e == "done step").unwrap();
+        assert!(run_pos < step_pos && step_pos < done_pos, "{events:?}");
     }
 }
