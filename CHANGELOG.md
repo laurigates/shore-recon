@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.0](https://github.com/laurigates/shore-recon/compare/v0.3.0...v0.4.0) (2026-10-30)
+
+
+### Features
+
+* **containers:** build the segmentation image for linux/amd64 ([#93](https://github.com/laurigates/shore-recon/issues/93)) ([d9d2444](https://github.com/laurigates/shore-recon/commit/d9d24445c1a1436e64be091cfdcc480a8d484713)), closes [#89](https://github.com/laurigates/shore-recon/issues/89)
+
+
+### Bug Fixes
+
+* **tools:** pin the multi-arch segmentation index so masks runs on x86_64 Linux ([#95](https://github.com/laurigates/shore-recon/issues/95)) ([de51e9f](https://github.com/laurigates/shore-recon/commit/de51e9fd45ae8838d974871a99e31682d77b5b19)), closes [#89](https://github.com/laurigates/shore-recon/issues/89)
+
 ## [0.3.0](https://github.com/laurigates/shore-recon/compare/v0.2.0...v0.3.0) (2026-10-30)
 
 
