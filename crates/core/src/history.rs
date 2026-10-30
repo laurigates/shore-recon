@@ -36,8 +36,7 @@ struct ToolTiming {
 /// When `version` is `Some`, only runs whose recorded stage version matches
 /// are kept; if none match, every run is kept as a fallback (history is
 /// advisory). `None` keeps every run.
-pub fn durations(work_root: &Path, stage: &str, version: impl AsRef<str>) -> Vec<f64> {
-    let version = Some(version.as_ref().to_owned());
+pub fn durations(work_root: &Path, stage: &str, version: Option<&str>) -> Vec<f64> {
     let mut all = Vec::new();
     let mut matching = Vec::new();
     for dataset in subdirs(work_root) {
@@ -55,15 +54,14 @@ pub fn durations(work_root: &Path, stage: &str, version: impl AsRef<str>) -> Vec
                 continue;
             }
             all.push(seconds);
-            if version.is_none() || t.version.as_ref() == version.as_ref() {
+            if version.is_none_or(|v| t.version.as_deref() == Some(v)) {
                 matching.push(seconds);
             }
         }
     }
-    if version.is_some() && !matching.is_empty() {
-        matching
-    } else {
-        all
+    match version {
+        Some(_) if !matching.is_empty() => matching,
+        _ => all,
     }
 }
 
@@ -101,7 +99,7 @@ impl Estimate {
     }
 
     /// From [`durations`] of `stage` under `work_root`.
-    pub fn of(work_root: &Path, stage: &str, version: impl AsRef<str>) -> Option<Self> {
+    pub fn of(work_root: &Path, stage: &str, version: Option<&str>) -> Option<Self> {
         Self::from_durations(&durations(work_root, stage, version))
     }
 }
@@ -163,10 +161,10 @@ mod tests {
         std::fs::create_dir_all(r.join("pier/dense/interrupted")).unwrap();
         std::fs::write(r.join("stray-file"), "").unwrap();
 
-        assert_eq!(durations(r, "dense", ""), [600.0, 1560.0]);
-        assert_eq!(durations(r, "sfm", ""), [200.0]);
-        assert!(durations(r, "splat", "").is_empty());
-        assert!(durations(&r.join("absent"), "dense", "").is_empty());
+        assert_eq!(durations(r, "dense", None), [600.0, 1560.0]);
+        assert_eq!(durations(r, "sfm", None), [200.0]);
+        assert!(durations(r, "splat", None).is_empty());
+        assert!(durations(&r.join("absent"), "dense", None).is_empty());
     }
 
     #[test]
@@ -175,10 +173,27 @@ mod tests {
         let r = root.path();
         write(r, "a/dense/x", r#"{"version":"v1","seconds":100.0}"#);
         write(r, "b/dense/y", r#"{"version":"v2","seconds":200.0}"#);
-        assert_eq!(durations(r, "dense", "v1"), [100.0]);
-        assert_eq!(durations(r, "dense", "v2"), [200.0]);
+        assert_eq!(durations(r, "dense", Some("v1")), [100.0]);
+        assert_eq!(durations(r, "dense", Some("v2")), [200.0]);
         // no matching version: fall back to every run
-        assert_eq!(durations(r, "dense", "v3"), [100.0, 200.0]);
+        assert_eq!(durations(r, "dense", Some("v3")), [100.0, 200.0]);
+    }
+
+    #[test]
+    fn estimate_of_filters_by_stage_version() {
+        let root = tempfile::tempdir().unwrap();
+        let r = root.path();
+        write(r, "a/dense/x", r#"{"version":"v1","seconds":100.0}"#);
+        write(r, "b/dense/y", r#"{"version":"v2","seconds":200.0}"#);
+        // matching version: only that run contributes
+        let e = Estimate::of(r, "dense", Some("v1")).unwrap();
+        assert_eq!((e.min, e.max, e.n), (100.0, 100.0, 1));
+        // non-matching version: fallback to every run
+        let e = Estimate::of(r, "dense", Some("v3")).unwrap();
+        assert_eq!(e.n, 2);
+        // None keeps every run
+        let e = Estimate::of(r, "dense", None).unwrap();
+        assert_eq!(e.n, 2);
     }
 
     #[test]

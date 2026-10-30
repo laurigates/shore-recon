@@ -70,8 +70,8 @@ impl Reporter {
             .filter(|s| plan.contains(&s.name()))
             .map(|&stage| {
                 let estimate = match versions.and_then(|v| v.get(stage.name())) {
-                    Some(version) => Estimate::of(work_root, stage.name(), version.as_str()),
-                    None => Estimate::of(work_root, stage.name(), ""),
+                    Some(version) => Estimate::of(work_root, stage.name(), Some(version.as_str())),
+                    None => Estimate::of(work_root, stage.name(), None),
                 };
                 let planned = Planned {
                     stage,
