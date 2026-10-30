@@ -68,9 +68,12 @@ RUN ldconfig
 ENV PATH=/usr/local/bin/OpenMVS:$PATH
 
 # Fails the build if a tool is missing, a library does not resolve, or a tool does not
-# start. `--help` exits 1 after printing, so the banner is checked, not the status.
+# start. `--help` exits 1 after printing, so the banner is checked, not the status;
+# it runs in a scratch directory because OpenMVS writes a log file to the cwd.
 RUN for t in InterfaceCOLMAP DensifyPointCloud ReconstructMesh RefineMesh TextureMesh; do \
         test -x "/usr/local/bin/OpenMVS/$t" || { echo "missing $t"; exit 1; }; done; \
     missing=$(ldd /usr/local/bin/OpenMVS/* | grep 'not found' || true); \
     test -z "$missing" || { echo "$missing"; exit 1; }; \
-    InterfaceCOLMAP --help 2>&1 | grep -q 'OpenMVS .* v2\.4\.0'
+    scratch=$(mktemp -d) && cd "$scratch" \
+    && InterfaceCOLMAP --help 2>&1 | grep -q 'OpenMVS .* v2\.4\.0' \
+    && cd / && rm -rf "$scratch"

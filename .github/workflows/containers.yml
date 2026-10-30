@@ -49,16 +49,17 @@ jobs:
             cache: min
           # CPU build for local Docker without a GPU host, one native runner per
           # architecture (OpenCV and OpenMVS under QEMU would not fit the timeout).
-          # Each pushes sha-<sha>-<arch>; the manifest job joins them.
+          # Each pushes sha-<sha>-<arch>; the manifest job joins them. Final-stage
+          # cache only: two OpenCV/OpenMVS build stages would crowd out the others.
           - name: openmvs-cpu
             platform: linux/arm64
             arch: arm64
             runner: ubuntu-24.04-arm
-            cache: max
+            cache: min
           - name: openmvs-cpu
             platform: linux/amd64
             arch: amd64
-            cache: max
+            cache: min
           # Same: torch and its CUDA libraries make the build stage several GB.
           - name: render
             platform: linux/amd64
@@ -123,14 +124,14 @@ jobs:
         run: echo "${IMAGE}@${{ steps.build.outputs.digest }}" | tee -a "$GITHUB_STEP_SUMMARY"
 
   # One index for the per-architecture openmvs-cpu images; its digest is the one a
-  # tools file pins, and Docker picks the host's architecture from it.
+  # tools file pins, and Docker picks the host's architecture from it. Runs even
+  # when another image's leg failed; a missing arch tag fails `imagetools create`.
   manifest:
     name: openmvs-cpu (manifest)
     needs: image
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     permissions:
-      contents: read
       packages: write
     env:
       IMAGE: ghcr.io/laurigates/shoreline-openmvs-cpu
