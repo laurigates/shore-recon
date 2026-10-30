@@ -25,6 +25,7 @@ shoreline-post.workspace = true
 shoreline-export.workspace = true
 anyhow.workspace = true
 clap.workspace = true
+clap_complete.workspace = true
 indicatif.workspace = true
 toml.workspace = true
 
@@ -33,6 +34,8 @@ tempfile.workspace = true
 
 [package.metadata.dist]
 dist = true
+# Shell completion scripts, kept current by the shipped_completions_match_the_cli test
+include = ["completions/"]
 
 [lints]
 workspace = true

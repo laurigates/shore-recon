@@ -51,7 +51,8 @@ that host, is machine configuration: see [docs/configuration.md](docs/configurat
 
 Other installs: the shell installer and archives for macOS (Apple Silicon) and Linux
 (x86_64) on the [releases page](https://github.com/laurigates/shore-recon/releases), or
-from source ([docs/development.md](docs/development.md)).
+from source ([docs/development.md](docs/development.md)). Homebrew installs the shell
+completions; for the others, see [shell completions](docs/usage.md#shell-completions).
 
 ## Documentation
 

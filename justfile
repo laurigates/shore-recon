@@ -20,6 +20,14 @@ check:
     cargo nextest run
     python3 -m unittest discover -s scripts -p 'test_*.py'
 
+# Regenerate the shell completion scripts shipped in the release archives
+completions:
+    cargo build -q -p shoreline-recon
+    mkdir -p crates/cli/completions
+    target/debug/shoreline-recon completions bash > crates/cli/completions/shoreline-recon.bash
+    target/debug/shoreline-recon completions zsh > crates/cli/completions/_shoreline-recon
+    target/debug/shoreline-recon completions fish > crates/cli/completions/shoreline-recon.fish
+
 # ---------- pipeline (shoreline-recon) ----------
 
 bin := "target/release/shoreline-recon"
