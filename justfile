@@ -115,3 +115,11 @@ share-copy file:
     ffmpeg -v error -y -i {{file}} -map 0:v -map_chapters 0 -map_metadata 0 -vf "scale=1280:-2:flags=lanczos" \
       -c:v libsvtav1 -preset 6 -crf 38 -g 60 -pix_fmt yuv420p -movflags +faststart {{without_extension(file)}}-1280.mp4
     @ls -l {{without_extension(file)}}-1280.mp4 | awk '{printf "%.1f MiB\n", $5/1048576}'
+
+# ---------- gpu host ----------
+
+# Clean stale mirrored mounts (and optionally the Apptainer cache) on the GPU host.
+# Dry run by default; pass --apply to delete. See scripts/clean_remote.py.
+[group('gpu')]
+clean-remote *args:
+    python3 scripts/clean_remote.py --tools "${SHORELINE_TOOLS:-configs/tools.toml}" --work work {{args}}
