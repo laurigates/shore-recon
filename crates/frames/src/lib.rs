@@ -96,12 +96,14 @@ impl Stage for Frames {
         let threshold = ctx.config.frames.blur_threshold;
         let mut scores = select(&images, &out_dir.join("rejected"), threshold)?;
         let kept = scores.iter().filter(|s| s.kept).count();
+        let blur_rejected = scores.iter().filter(|s| !s.kept).count();
         on_event(shoreline_core::pipeline::Event::Step {
             stage: NAME,
             message: &format!("scored {} frames, kept {}", scores.len(), kept),
         });
         let dedup_threshold = ctx.config.frames.dedup_threshold;
         let dropped = dedup::drop_duplicates(&images, &out_dir.join("rejected"), dedup_threshold)?;
+        let dedup_dropped = dropped.len();
         for s in scores.iter_mut() {
             if dropped.iter().any(|d| d == &s.image) {
                 s.kept = false;
@@ -115,9 +117,12 @@ impl Stage for Frames {
                 csv.display()
             )));
         }
+        let mut m = metrics(&scores);
+        m.insert("blur_rejected".to_owned(), blur_rejected as f64);
+        m.insert("dedup_dropped".to_owned(), dedup_dropped as f64);
         Ok(StageRun {
             tools: vec![record],
-            metrics: metrics(&scores),
+            metrics: m,
         })
     }
 }
