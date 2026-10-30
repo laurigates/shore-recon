@@ -1,8 +1,9 @@
 //! Near-duplicate frame removal for the frames stage (#10).
 //!
-//! Frames are compared by an 8x8 average perceptual hash (aHash); two frames
-//! whose hashes are within `threshold` Hamming bits of a previously kept frame
-//! are dropped. This is cheap, scale/shift tolerant enough for consecutive
+//! Frames are compared by an 8x8 average perceptual hash (aHash); a frame
+//! whose hash is within `threshold` Hamming bits of *any* previously kept
+//! frame is dropped (all kept frames are compared, not just the immediate
+//! predecessor). This is cheap, scale/shift tolerant enough for consecutive
 //! video frames, and needs no external tools.
 
 use std::path::Path;
@@ -63,10 +64,7 @@ pub fn drop_duplicates(images: &Path, rejected: &Path, threshold: u32) -> Result
     let mut dropped = Vec::new();
     for name in names {
         let path = images.join(&name);
-        let luma = match decode_luma(&path) {
-            Ok(l) => l,
-            Err(_) => continue,
-        };
+        let luma = decode_luma(&path)?;
         let hash = ahash(&luma);
         let is_dup = kept_hashes
             .iter()
@@ -132,10 +130,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (images, rejected) = (dir.path().join("images"), dir.path().join("rejected"));
         fs::create_dir(&images).unwrap();
+        // An exact duplicate of the first frame, plus a differing frame.
         fs::copy(fixture("sharp.jpg"), images.join("00001.jpg")).unwrap();
-        fs::copy(fixture("soft.jpg"), images.join("00002.jpg")).unwrap();
+        fs::copy(fixture("sharp.jpg"), images.join("00002.jpg")).unwrap();
+        fs::copy(fixture("soft.jpg"), images.join("00003.jpg")).unwrap();
         let dropped = drop_duplicates(&images, &rejected, 0).unwrap();
-        // soft differs from sharp, so nothing dropped unless identical.
-        assert!(dropped.is_empty() || dropped.len() <= 1);
+        // At threshold 0 an exact duplicate is dropped...
+        assert_eq!(dropped, vec!["00002.jpg".to_string()]);
+        // ...and a differing frame is kept.
+        assert!(images.join("00001.jpg").is_file() && images.join("00003.jpg").is_file());
+        assert!(rejected.join("00002.jpg").is_file());
     }
 }
