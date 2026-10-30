@@ -45,6 +45,31 @@ With `--videos`, also:
 
 Units are the reconstruction's own (COLMAP), not metres.
 
+### What a run prints
+
+Progress goes to stderr ([ADR-0018](adr/0018-run-progress-and-estimates.md)). On a
+terminal, finished stages scroll above two live lines:
+
+```
+✓ frames   7s
+✓ masks    7m02s   (usual 7m)
+⠙ [4/7] dense  DensifyPointCloud 3/5  38%  4m12s · usual 10m–26m  Estimated depth-maps 47 ...
+  total 18m40s · ~20m–35m left
+```
+
+Otherwise (CI, `just batch` logs), one line per event, with a heartbeat every minute:
+
+```
+[4/7] dense: running (usual 10m–26m) in <dir>
+[4/7] dense: step 3/5 DensifyPointCloud
+[4/7] dense: still running, 5m00s, 38% — Estimated depth-maps 47 (38.84%, 9s, ETA 14s)...
+[4/7] dense: done in 10m24s
+```
+
+Estimates are the range of earlier runs of the stage in the same cache root, across
+datasets; a stage with no earlier run shows its elapsed time only. Both modes end with a
+table of each stage, whether it ran or was cached, and its time.
+
 ## Dataset configs
 
 For repeated work on a capture, a dataset config keeps its settings:

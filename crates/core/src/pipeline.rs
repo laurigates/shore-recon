@@ -8,12 +8,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::cache::{self, Manifest, Source, Upstream};
 use crate::dag::topo_order;
 use crate::error::{Error, Result, io_error};
 use crate::fingerprint::Fingerprint;
+use crate::history::Estimate;
 use crate::stage::{Inputs, Metrics, RunContext, Stage, StageOutput};
 
 /// Outcome for one stage.
@@ -39,6 +40,12 @@ pub enum Event<'a> {
     Running {
         stage: &'static str,
         dir: &'a Path,
+        /// Position in the run's stages, from 1.
+        index: usize,
+        /// Number of stages in the run, cached ones included.
+        total: usize,
+        /// From earlier runs of the stage under the work root.
+        estimate: Option<Estimate>,
     },
     Finished(&'a StageResult),
     /// A gate passed with a warning (reported after `Finished`).
@@ -67,17 +74,22 @@ pub fn run(
         fingerprint: Fingerprint::of_content(input)?,
     };
 
+    let order: Vec<&str> = order.into_iter().filter(|n| selected.contains(n)).collect();
     let mut outputs: BTreeMap<&str, StageOutput> = BTreeMap::new();
     let mut results = Vec::new();
-    for name in order.into_iter().filter(|n| selected.contains(n)) {
+    for (i, &name) in order.iter().enumerate() {
         let stage = by_name[name];
+        let position = Position {
+            index: i + 1,
+            total: order.len(),
+        };
         let inputs: Inputs = stage
             .deps()
             .iter()
             .map(|&dep| (dep, outputs[dep].clone()))
             .collect();
         let source = stage.deps().is_empty().then_some(&source);
-        let mut result = run_stage(ctx, stage, &inputs, source, on_event)?;
+        let mut result = run_stage(ctx, stage, position, &inputs, source, on_event)?;
         on_event(Event::Finished(&result));
         result.warnings = stage.gate(&ctx.config, &result.metrics)?;
         for message in &result.warnings {
@@ -149,10 +161,17 @@ fn discard_error(stage: &'static str, dir: &Path, source: std::io::Error) -> Err
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct Position {
+    index: usize,
+    total: usize,
+}
+
 /// Reuse the cached output for `stage` or run it into a fresh directory.
 fn run_stage(
     ctx: &RunContext,
     stage: &dyn Stage,
+    position: Position,
     inputs: &Inputs,
     source: Option<&Source>,
     on_event: &mut dyn FnMut(Event<'_>),
@@ -187,12 +206,18 @@ fn run_stage(
         });
     }
     std::fs::create_dir_all(&dir).map_err(io_error(&dir))?;
+    let work_root = ctx.work_dir.parent().unwrap_or(&ctx.work_dir);
     on_event(Event::Running {
         stage: name,
         dir: &dir,
+        index: position.index,
+        total: position.total,
+        estimate: Estimate::of(work_root, name),
     });
 
+    let started = Instant::now();
     let run = stage.run(ctx, inputs, &dir)?;
+    let seconds = started.elapsed().as_secs_f64();
     // Logs relative to the output, so they resolve after the tree is copied.
     let tools = run
         .tools
@@ -227,6 +252,7 @@ fn run_stage(
         created_unix: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_secs()),
+        seconds: Some(seconds),
     };
     cache::publish(&dir, &manifest)?;
     Ok(result(false, manifest.metrics))
@@ -534,6 +560,39 @@ mod tests {
     }
 
     #[test]
+    fn running_reports_the_position_and_an_estimate_from_earlier_runs() {
+        let e = env();
+        let s = stages();
+        let running = |targets: &[&str]| {
+            let mut seen = Vec::new();
+            run(&e.ctx, &refs(&s), targets, &mut |ev| {
+                if let Event::Running {
+                    stage,
+                    index,
+                    total,
+                    estimate,
+                    ..
+                } = ev
+                {
+                    seen.push((stage, index, total, estimate.map(|e| e.n)));
+                }
+            })
+            .unwrap();
+            seen
+        };
+        assert_eq!(
+            running(&["c"]),
+            [("a", 1, 3, None), ("b", 2, 3, None), ("c", 3, 3, None)]
+        );
+        // Positions count cached stages: b and c rerun as 2/3 and 3/3.
+        *s[1].config.borrow_mut() = serde_json::json!({"n": 2});
+        assert_eq!(
+            running(&["c"]),
+            [("b", 2, 3, Some(1)), ("c", 3, 3, Some(1))]
+        );
+    }
+
+    #[test]
     fn unknown_target_or_dependency_is_an_error() {
         let e = env();
         let s = stages();
@@ -567,6 +626,7 @@ mod tests {
         );
         assert_eq!(m.source, None, "only root stages record the source");
         assert_eq!(m.metrics, b.metrics);
+        assert!(m.seconds.is_some_and(|s| s > 0.0), "{:?}", m.seconds);
         assert_eq!(
             b.fingerprint,
             Fingerprint::compute("b", &m.config, &[a.fingerprint], "1")

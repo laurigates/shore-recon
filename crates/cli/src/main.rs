@@ -1,8 +1,10 @@
+mod progress;
+
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
-use shoreline_core::pipeline::{self, Event, StageResult};
+use shoreline_core::pipeline::{self, StageResult};
 use shoreline_core::{Config, RunContext, Stage, Tools, dag, dirs};
 use shoreline_dense::Dense;
 use shoreline_export::{Export, copy_out};
@@ -12,6 +14,8 @@ use shoreline_post::Post;
 use shoreline_sfm::Sfm;
 use shoreline_splat::Splat;
 use shoreline_video::VideoStage;
+
+use progress::{Reporter, SyncStage};
 
 /// Water-aware photogrammetry and Gaussian splatting pipeline.
 ///
@@ -84,7 +88,8 @@ enum Command {
 
 /// The stages for `config`, in pipeline order; `run` refuses targets outside
 /// this list. Export depends on the video stage only with `export.videos`.
-fn stages(config: &Config) -> Vec<&'static dyn Stage> {
+/// `Sync` so the progress watcher can read logs with them.
+fn stages(config: &Config) -> Vec<SyncStage> {
     vec![
         &Frames,
         &Masks,
@@ -95,6 +100,26 @@ fn stages(config: &Config) -> Vec<&'static dyn Stage> {
         &VideoStage,
         Export::for_config(config),
     ]
+}
+
+/// `stages` as the pipeline takes them.
+fn as_stages(stages: &[SyncStage]) -> Vec<&dyn Stage> {
+    stages.iter().map(|&s| s as &dyn Stage).collect()
+}
+
+/// Run `targets` with progress on stderr and a summary table at the end.
+fn run_reported(
+    ctx: &RunContext,
+    stages: &[SyncStage],
+    targets: &[&str],
+) -> Result<Vec<StageResult>> {
+    let all = as_stages(stages);
+    let plan = pipeline::plan(&all, targets)?;
+    let work_root = ctx.work_dir.parent().unwrap_or(&ctx.work_dir);
+    let mut reporter = Reporter::new(stages, &plan, &ctx.config, work_root);
+    let results = pipeline::run(ctx, &all, targets, &mut |e| reporter.event(e))?;
+    reporter.summary();
+    Ok(results)
 }
 
 /// What `run` builds when no `--stage` is given: the deliverables.
@@ -188,7 +213,7 @@ fn quick(q: &QuickArgs, video: &Path, tools: Option<&Path>, work: Option<&Path>)
     };
     let videos = config.export.videos;
     let ctx = RunContext::new(config, tools, &work)?;
-    let results = pipeline::run(&ctx, &stages(&ctx.config), DEFAULT_TARGETS, &mut report)?;
+    let results = run_reported(&ctx, &stages(&ctx.config), DEFAULT_TARGETS)?;
     let export = results
         .iter()
         .find(|r| r.stage == shoreline_export::NAME)
@@ -254,18 +279,6 @@ fn check_input(input: &Path, cwd: &Path) -> Result<()> {
     Ok(())
 }
 
-fn report(event: Event<'_>) {
-    match event {
-        Event::Discarded { stage, dir } => {
-            eprintln!("{stage}: discarded interrupted output {}", dir.display());
-        }
-        Event::Running { stage, dir } => eprintln!("{stage}: running in {}", dir.display()),
-        Event::Finished(r) if r.cached => eprintln!("{}: cached", r.stage),
-        Event::Finished(r) => eprintln!("{}: done", r.stage),
-        Event::Warning { stage, message } => eprintln!("{stage}: warning: {message}"),
-    }
-}
-
 /// `stage<TAB>ran|cached<TAB>dir<TAB>metric=value ...`
 fn summary(result: &StageResult) -> String {
     let status = if result.cached { "cached" } else { "ran" };
@@ -298,7 +311,7 @@ fn main() -> Result<()> {
         }
         Command::Plan { config } => {
             let config = load(config.as_deref())?;
-            for (i, stage) in pipeline::plan(&stages(&config), DEFAULT_TARGETS)?
+            for (i, stage) in pipeline::plan(&as_stages(&stages(&config)), DEFAULT_TARGETS)?
                 .iter()
                 .enumerate()
             {
@@ -320,7 +333,7 @@ fn main() -> Result<()> {
                 targets = DEFAULT_TARGETS.to_vec();
             }
             check_input(&ctx.config.dataset.input, &std::env::current_dir()?)?;
-            for result in pipeline::run(&ctx, &all, &targets, &mut report)? {
+            for result in run_reported(&ctx, &all, &targets)? {
                 println!("{}", summary(&result));
             }
         }
@@ -352,7 +365,7 @@ mod tests {
             .collect();
         assert_eq!(graph(&config), expected);
         assert_eq!(
-            pipeline::plan(&stages(&config), DEFAULT_TARGETS).unwrap(),
+            pipeline::plan(&as_stages(&stages(&config)), DEFAULT_TARGETS).unwrap(),
             ["frames", "masks", "sfm", "dense", "splat", "post", "export"]
         );
 
@@ -360,7 +373,7 @@ mod tests {
         expected.last_mut().unwrap().1.push("video");
         assert_eq!(graph(&config), expected);
         assert_eq!(
-            pipeline::plan(&stages(&config), DEFAULT_TARGETS).unwrap(),
+            pipeline::plan(&as_stages(&stages(&config)), DEFAULT_TARGETS).unwrap(),
             [
                 "frames", "masks", "sfm", "dense", "splat", "post", "video", "export"
             ]

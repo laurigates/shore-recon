@@ -20,6 +20,8 @@ use shoreline_core::tools::Invocation;
 use shoreline_core::{Config, Error, Result, RunContext, Stage};
 
 pub const NAME: &str = "masks";
+/// Log stem of the segmentation step.
+const LOG: &str = "segment";
 /// The stage whose `images/` this stage masks (ADR-0005).
 const FRAMES: &str = "frames";
 
@@ -37,6 +39,18 @@ pub struct Masks;
 pub struct Coverage {
     pub image: String,
     pub masked_fraction: f64,
+}
+
+/// Frames segmented so far: the segment tool prints `<frame>.jpg <score>`
+/// as it finishes each frame.
+pub fn segmented(log: &str) -> usize {
+    log.lines()
+        .filter(|line| {
+            line.split_once(' ').is_some_and(|(frame, score)| {
+                frame.ends_with(".jpg") && score.trim().parse::<f64>().is_ok()
+            })
+        })
+        .count()
 }
 
 /// Mask path for `image` (relative to the image root) under `mask_root`.
@@ -73,6 +87,15 @@ impl Stage for Masks {
         Ok(format!("{NAME}/{REVISION} {}", segment.version(&[])?))
     }
 
+    fn steps(&self, _: &Config) -> Vec<String> {
+        vec![LOG.to_owned()]
+    }
+
+    fn progress(&self, _step: &str, log: &str, frames: Option<usize>) -> Option<f64> {
+        let frames = frames.filter(|&n| n > 0)?;
+        Some((segmented(log) as f64 / frames as f64).min(1.0))
+    }
+
     fn run(&self, ctx: &RunContext, inputs: &Inputs, out_dir: &Path) -> Result<StageRun> {
         let images = inputs[FRAMES].dir.join("images");
         let (raw, masks, overlays) = (
@@ -94,7 +117,7 @@ impl Stage for Masks {
         let record = ctx
             .tools
             .get("segment")?
-            .run(&segment, &out_dir.join("logs/segment.log"))?;
+            .run(&segment, &out_dir.join(format!("logs/{LOG}.log")))?;
 
         let dilate_px = ctx.config.masks.dilate_px as usize;
         let mut rows = Vec::new();
@@ -246,6 +269,19 @@ mod tests {
     use std::fs;
 
     use super::*;
+
+    /// From `work/reposalmi-laajasalo/masks/*/logs/segment.log`.
+    const SEGMENT: &str = "- MISSING:\tthose params were newly initialized because missing from \
+        the checkpoint. Consider training on your downstream task.\n\
+        00001.jpg 0.407792\n00002.jpg 0.409480\n00003.jpg 0.421299\n000";
+
+    #[test]
+    fn progress_counts_segmented_frames() {
+        assert_eq!(segmented(SEGMENT), 3);
+        assert_eq!(Masks.progress("segment", SEGMENT, Some(12)), Some(0.25));
+        assert_eq!(Masks.progress("segment", SEGMENT, Some(0)), None);
+        assert_eq!(Masks.progress("segment", SEGMENT, None), None);
+    }
     use shoreline_core::Tools;
     use shoreline_core::stage::StageOutput;
 
@@ -437,6 +473,7 @@ mod tests {
         let csv = fs::read_to_string(out.join("masks.csv")).unwrap();
         assert_eq!(csv.lines().count(), 4, "{csv}");
         assert_eq!(run.tools[0].log, out.join("logs/segment.log"));
+        assert_eq!(Masks.steps(&ctx.config), ["segment"]);
 
         // Overlay content (128x96): mean red-minus-green over a row range.
         let overlay = image::open(out.join("overlays/00001.jpg"))

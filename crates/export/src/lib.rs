@@ -283,6 +283,7 @@ mod tests {
             }],
             metrics: [(format!("{stage}_n"), 1.0)].into(),
             created_unix: 0,
+            seconds: None,
         };
         cache::publish(&dir, &manifest).unwrap();
         StageOutput { fingerprint, dir }

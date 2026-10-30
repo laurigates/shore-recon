@@ -25,7 +25,11 @@ shoreline-post.workspace = true
 shoreline-export.workspace = true
 anyhow.workspace = true
 clap.workspace = true
+indicatif.workspace = true
 toml.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [package.metadata.dist]
 dist = true

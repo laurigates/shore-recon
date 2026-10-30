@@ -107,6 +107,17 @@ pub fn steps(sfm: &SfmConfig, paths: &Paths, gpu: bool) -> Vec<(&'static str, Ve
     ]
 }
 
+/// Frames the mapper has registered so far, from its last
+/// `Registering image #N (num_reg_frames=M)` line. The count restarts for
+/// each model when the capture splits.
+pub fn registered(log: &str) -> Option<usize> {
+    let (_, tail) = log.rsplit_once("num_reg_frames=")?;
+    tail.split(|c: char| !c.is_ascii_digit())
+        .next()?
+        .parse()
+        .ok()
+}
+
 /// Read every `sparse/<n>` model, make the one with the most registered images
 /// `sparse/0`, and return it with the number of models.
 pub fn select_model(sparse: &Path) -> Result<(Model, usize)> {
@@ -177,6 +188,27 @@ impl Stage for Sfm {
         Ok(format!("{NAME}/{REVISION} {}", colmap.version(&["help"])?))
     }
 
+    fn steps(&self, config: &Config) -> Vec<String> {
+        // Only the names are used; they do not depend on the paths.
+        let paths = Paths {
+            images: PathBuf::new(),
+            masks: PathBuf::new(),
+            out: PathBuf::new(),
+        };
+        steps(&config.sfm, &paths, false)
+            .into_iter()
+            .map(|(log, _)| log.to_owned())
+            .collect()
+    }
+
+    fn progress(&self, step: &str, log: &str, frames: Option<usize>) -> Option<f64> {
+        let frames = frames.filter(|&n| n > 0)?;
+        match step {
+            "mapper" => Some((registered(log)? as f64 / frames as f64).min(1.0)),
+            _ => None,
+        }
+    }
+
     fn run(&self, ctx: &RunContext, inputs: &Inputs, out_dir: &Path) -> Result<StageRun> {
         let paths = Paths {
             images: inputs[FRAMES].dir.join("images"),
@@ -237,6 +269,34 @@ mod tests {
         args.iter()
             .map(|a| a.to_string_lossy().into_owned())
             .collect()
+    }
+
+    /// From `work/reposalmi-laajasalo/sfm/*/logs/mapper.log`.
+    const MAPPER: &str = "I20261025 23:16:54.072929 675181 incremental_pipeline.cc:620] \
+        Registering image #1 (num_reg_frames=6)\n\
+        I20261025 23:16:54.072968 675181 incremental_pipeline.cc:623] => Image sees 3672 / 8532 points\n\
+        I20261025 23:16:54.692838 675181 incremental_pipeline.cc:620] \
+        Registering image #4 (num_reg_frames=7)\n";
+
+    #[test]
+    fn mapper_progress_is_registered_frames_over_kept_frames() {
+        assert_eq!(registered(MAPPER), Some(7));
+        assert_eq!(registered("no images yet"), None);
+        assert_eq!(Sfm.progress("mapper", MAPPER, Some(14)), Some(0.5));
+        assert_eq!(Sfm.progress("mapper", MAPPER, None), None);
+        assert_eq!(Sfm.progress("sequential_matcher", MAPPER, Some(14)), None);
+    }
+
+    #[test]
+    fn steps_follow_the_matcher() {
+        let mut config = repo_config("reposalmi-laajasalo");
+        config.sfm.matcher = Matcher::Sequential;
+        assert_eq!(
+            Sfm.steps(&config),
+            ["feature_extractor", "sequential_matcher", "mapper"]
+        );
+        config.sfm.matcher = Matcher::Exhaustive;
+        assert_eq!(Sfm.steps(&config)[1], "exhaustive_matcher");
     }
 
     #[test]

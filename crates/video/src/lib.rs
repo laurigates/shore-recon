@@ -57,6 +57,11 @@ pub const STEPS: &[(&str, &str)] = &[
     ("6-splat-raw", "Gaussian splat, before post"),
 ];
 
+/// Log stem of the render of `name` (a video or step clip stem).
+fn log_stem(name: &str) -> String {
+    format!("render_{name}")
+}
+
 /// The step clips' file names, in order.
 pub fn step_files() -> Vec<String> {
     STEPS.iter().map(|(s, _)| format!("step-{s}.mp4")).collect()
@@ -331,6 +336,18 @@ impl Stage for VideoStage {
         Ok(format!("{NAME}/{REVISION} {}", render.version(&[])?))
     }
 
+    fn steps(&self, config: &Config) -> Vec<String> {
+        let videos = SCENES.iter().flat_map(|scene| {
+            config
+                .video
+                .views
+                .iter()
+                .map(move |view| video_name(scene, view))
+        });
+        let clips = STEPS.iter().map(|(step, _)| format!("step-{step}"));
+        videos.chain(clips).map(|name| log_stem(&name)).collect()
+    }
+
     fn run(&self, ctx: &RunContext, inputs: &Inputs, out_dir: &Path) -> Result<StageRun> {
         let splat = &inputs[SPLAT].dir;
         let post_dir = &inputs[POST].dir;
@@ -379,7 +396,7 @@ impl Stage for VideoStage {
                     .mount(splat)
                     .mount(post_dir)
                     .mount(out_dir);
-                let log = out_dir.join(format!("logs/render_{name}.log"));
+                let log = out_dir.join(format!("logs/{}.log", log_stem(&name)));
                 tools.push(render.run(&inv, &log)?);
                 let size = |f: String| mib(&out_dir.join(f));
                 metrics.insert(format!("{name}_mib"), size(format!("{name}.mp4"))?);
@@ -428,7 +445,7 @@ impl Stage for VideoStage {
                 "4-dense" | "5-mesh-raw" => inv.mount(dense),
                 _ => inv,
             };
-            let log = out_dir.join(format!("logs/render_{name}.log"));
+            let log = out_dir.join(format!("logs/{}.log", log_stem(&name)));
             tools.push(render.run(&inv, &log)?);
             metrics.insert(
                 format!("{name}_mib"),
@@ -459,6 +476,27 @@ mod tests {
         args.iter()
             .map(|a| a.to_string_lossy().into_owned())
             .collect()
+    }
+
+    #[test]
+    fn steps_are_one_render_per_video_then_per_step_clip() {
+        let config = repo_config();
+        let views: Vec<_> = config
+            .video
+            .views
+            .iter()
+            .map(|v| path_name(v.path))
+            .collect();
+        let mut expected: Vec<String> = SCENES
+            .iter()
+            .flat_map(|s| views.iter().map(move |v| format!("render_{s}-{v}")))
+            .collect();
+        expected.extend(STEPS.iter().map(|(s, _)| format!("render_step-{s}")));
+        assert_eq!(VideoStage.steps(&config), expected);
+        assert_eq!(
+            VideoStage.steps(&config).last().unwrap(),
+            "render_step-6-splat-raw"
+        );
     }
 
     #[test]

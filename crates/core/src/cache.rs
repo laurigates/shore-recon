@@ -46,6 +46,10 @@ pub struct Manifest {
     pub tools: Vec<ToolRecord>,
     pub metrics: Metrics,
     pub created_unix: u64,
+    /// Wall time of the stage run. Absent in manifests written before it was
+    /// recorded; not part of the fingerprint.
+    #[serde(default)]
+    pub seconds: Option<f64>,
 }
 
 /// The manifest in `dir`, if the output there is complete. A manifest for a
@@ -150,6 +154,7 @@ mod tests {
             }],
             metrics: [("kept".to_owned(), 121.0)].into(),
             created_unix: 1_761_300_000,
+            seconds: Some(12.5),
         }
     }
 
@@ -168,6 +173,16 @@ mod tests {
             .map(|e| e.unwrap().file_name())
             .collect();
         assert_eq!(names, [MANIFEST_FILE], "no temporary file left behind");
+    }
+
+    #[test]
+    fn manifest_without_seconds_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut json = serde_json::to_value(manifest(fp(1))).unwrap();
+        json.as_object_mut().unwrap().remove("seconds");
+        std::fs::write(dir.path().join(MANIFEST_FILE), json.to_string()).unwrap();
+        let m = lookup(dir.path(), &fp(1)).unwrap().unwrap();
+        assert_eq!(m.seconds, None);
     }
 
     #[test]
