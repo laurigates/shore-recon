@@ -201,6 +201,8 @@ max_long_edge  = 3200
 backend   = "container"
 classes   = ["water", "sea", "river", "lake", "sky", "person", "boat"]
 dilate_px = 8
+water_min_prob = 0.5
+water_min_area = 0.02
 temporal  = false
 
 [sfm]

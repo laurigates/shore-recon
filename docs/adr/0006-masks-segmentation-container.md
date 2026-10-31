@@ -42,6 +42,12 @@ run does not. Every other frame is at 0.955 or above.
    keeps peak memory near 3 GB for a 3200×1800 frame; upsampling all 150 at once needs about 5.2 GB
    and is killed under a 4 GB container limit. `segment --check --classes …` loads
    the model and validates the classes; the image build runs it with the default classes.
+   Water pixels (argmax in water, sea, river or lake, when among the classes) are gated (#12):
+   `--water-min-prob` (`[masks] water_min_prob`) is the smallest share of the summed class
+   scores that the water classes must hold, and `--water-min-area` (`[masks] water_min_area`)
+   drops 4-connected water regions that do not touch the bottom row and cover less than that
+   fraction of the image. Both at 0 give plain argmax; the stage passes both after the
+   positional arguments. The gating lives in `regions.py` beside `segment.py` in the image.
 4. The masks stage in Rust turns these into COLMAP masks (dilation, black = ignore,
    `masks/<image>.png`), writes the review overlays, and computes the masked-fraction metrics and
    the warn-only gate.

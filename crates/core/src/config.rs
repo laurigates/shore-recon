@@ -59,6 +59,12 @@ pub struct Masks {
     pub model: Option<PathBuf>,
     pub classes: Vec<String>,
     pub dilate_px: u32,
+    /// Smallest water probability (the water classes' share of the class
+    /// scores) for a pixel whose argmax is a water class to stay masked (#12).
+    pub water_min_prob: f64,
+    /// Smallest area, as a fraction of the image, of a water component that
+    /// does not touch the bottom row (#12).
+    pub water_min_area: f64,
     pub temporal: bool,
 }
 
@@ -235,6 +241,8 @@ impl Config {
             ("frames.blur_threshold", self.frames.blur_threshold),
             ("post.min_component", self.post.min_component),
             ("post.floater_max_water", self.post.floater_max_water),
+            ("masks.water_min_prob", self.masks.water_min_prob),
+            ("masks.water_min_area", self.masks.water_min_area),
             ("video.share_max_mib", self.video.share_max_mib),
             (
                 "gates.min_registered_ratio",
@@ -287,6 +295,12 @@ impl Config {
         }
         if !(0.0..=1.0).contains(&self.post.floater_max_water) {
             return invalid("post.floater_max_water must be within [0, 1]");
+        }
+        if !(0.0..=1.0).contains(&self.masks.water_min_prob) {
+            return invalid("masks.water_min_prob must be within [0, 1]");
+        }
+        if !(0.0..=1.0).contains(&self.masks.water_min_area) {
+            return invalid("masks.water_min_area must be within [0, 1]");
         }
         if self.post.waterline_band_px == 0
             || self.post.target_faces == 0
@@ -599,6 +613,27 @@ mod tests {
         ] {
             let err = with_overrides(overrides).unwrap_err().to_string();
             assert!(err.contains(needle), "{overrides:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn masks_water_thresholds_are_within_unit_interval() {
+        let defaults = with_overrides("").unwrap();
+        assert_eq!(defaults.masks.water_min_prob, 0.5);
+        assert_eq!(defaults.masks.water_min_area, 0.02);
+        for key in ["water_min_prob", "water_min_area"] {
+            for value in ["1.5", "-0.1", "nan"] {
+                let err = with_overrides(&format!("[masks]\n{key} = {value}\n"))
+                    .unwrap_err()
+                    .to_string();
+                assert!(
+                    err.contains(&format!("masks.{key}")),
+                    "{key} = {value}: {err}"
+                );
+            }
+            for value in ["0.0", "1.0"] {
+                with_overrides(&format!("[masks]\n{key} = {value}\n")).unwrap();
+            }
         }
     }
 

@@ -35,6 +35,7 @@ ENV SEGMENT_MODEL=/opt/models/oneformer \
     TRANSFORMERS_OFFLINE=1
 
 COPY --chmod=755 segment.py /usr/local/bin/segment
+COPY regions.py /usr/local/bin/regions.py
 
 # Fails the build if the dependencies, the weights or the default classes are broken.
 RUN segment --check --classes water,sea,river,lake,sky,person,boat
