@@ -3,7 +3,7 @@
 # Apple Silicon) and linux/amd64. Densify and texturing run on the CPU: slower,
 # same outputs. Built and pushed by .github/workflows/containers.yml as one index
 # for both architectures.
-FROM ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac AS build
+FROM ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852 AS build
 
 # Keep these in step with containers/openmvs/Containerfile.
 ARG OPENMVS_COMMIT=eeedab7acceae48a92ddf44eaf4eb6ffe2fef14d
@@ -54,7 +54,7 @@ RUN ldd /usr/local/bin/OpenMVS/* | awk '/=> \// {print $3}' | xargs -r readlink 
         | xargs -r dpkg -S 2>/dev/null | cut -d: -f1 | sort -u > /runtime-packages \
     && cat /runtime-packages && test -s /runtime-packages
 
-FROM ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac
+FROM ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
 
 LABEL org.opencontainers.image.source="https://github.com/laurigates/shore-recon" \
       org.opencontainers.image.description="shoreline-recon dense backend: OpenMVS v2.4.0 (CPU)"
