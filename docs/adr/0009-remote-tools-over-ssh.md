@@ -45,8 +45,11 @@ single tools on the remote host.
    `status.tmp` and `mv`. Every `poll_secs` seconds a short ssh call prints the state, read
    before the log, and the bytes of `out.log` past what the Mac already has; those bytes are
    appended to the stage log, which the progress display tails. The state is the exit code,
-   running, dead (the wrapper's pid is gone without a `status`: killed, or the host restarted),
-   or missing. A failed call (ssh exit 255, any other non-zero exit, or output without the state
+   running, starting (`out.log` exists but the wrapper has not written `pid`), dead (the
+   wrapper's pid is gone without a `status`: killed, or the host restarted), or missing. A run
+   that answers starting to more than `reconnect_attempts` consecutive polls fails as never
+   started, which covers a launch whose connection dropped after it created `out.log` but before
+   the wrapper ran. A failed call (ssh exit 255, any other non-zero exit, or output without the state
    line) is retried after `reconnect_delay_secs`, doubled per consecutive failure up to
    `reconnect_max_delay_secs`; a successful poll resets the count. After more than
    `reconnect_attempts` consecutive failures the run fails with an error that names the host and

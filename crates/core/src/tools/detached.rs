@@ -110,8 +110,10 @@ pub(super) fn launch_line(container_line: &str, dir: &str) -> String {
 
 /// Prints `SHORELINE-STATUS <state>`, then `out.log` from byte `offset`. The
 /// state is read before the log, so an exit code means the log is complete.
-/// States: an exit code; `running`; `dead` when the wrapper is gone without
-/// an exit code; `missing` when nothing was started or the directory is gone.
+/// States: an exit code; `running`; `starting` when the launch created
+/// `out.log` but the wrapper has not written its pid; `dead` when the wrapper
+/// is gone without an exit code; `missing` when nothing was started or the
+/// directory is gone.
 pub(super) fn poll_line(dir: &str, offset: u64) -> String {
     format!(
         "cd {dir} 2>/dev/null || {{ echo 'SHORELINE-STATUS missing'; exit 0; }}; \
@@ -119,7 +121,7 @@ pub(super) fn poll_line(dir: &str, offset: u64) -> String {
          elif [ -s pid ] && kill -0 \"$(cat pid)\" 2>/dev/null; then s=running; \
          elif [ -e status ]; then s=$(cat status); \
          elif [ -s pid ]; then s=dead; \
-         elif [ -e out.log ]; then s=running; \
+         elif [ -e out.log ]; then s=starting; \
          else s=missing; fi; \
          echo \"SHORELINE-STATUS $s\"; tail -c +{} out.log 2>/dev/null; true",
         offset + 1
@@ -133,6 +135,9 @@ pub(super) fn cleanup_line(dir: &str) -> String {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PollState {
     Running,
+    /// `out.log` exists but the wrapper has not recorded its pid yet; a launch
+    /// that died before starting the wrapper stays here.
+    Starting,
     Exited(i32),
     /// The wrapper ended without writing an exit code (killed, host restart).
     Dead,
@@ -149,6 +154,7 @@ pub(super) fn parse_poll(out: &[u8]) -> Option<(PollState, &[u8])> {
     let word = std::str::from_utf8(head.strip_prefix(b"SHORELINE-STATUS ")?).ok()?;
     let state = match word {
         "running" => PollState::Running,
+        "starting" => PollState::Starting,
         "dead" => PollState::Dead,
         "missing" => PollState::Missing,
         code => PollState::Exited(code.parse().ok()?),
@@ -168,7 +174,7 @@ pub(super) enum Next {
 
 pub(super) fn next(launched: bool, state: PollState) -> Next {
     match state {
-        PollState::Running => Next::Wait,
+        PollState::Running | PollState::Starting => Next::Wait,
         PollState::Exited(code) => Next::Finished(code),
         // A launch whose ssh call failed before it created anything.
         PollState::Missing if !launched => Next::Relaunch,
@@ -202,6 +208,11 @@ impl RetryPolicy {
             .map_or(self.max, |d| d.min(self.max))
     }
 }
+
+/// Why a run fails that stayed `starting` for more polls than the policy's
+/// attempts: the wrapper records its pid first, so it never started.
+const NEVER_STARTED: &str =
+    "the remote command never started (out.log exists but the wrapper wrote no pid)";
 
 /// More consecutive failures than the policy allows.
 pub(super) fn exhausted(failures: u32, attempts: u32) -> bool {
@@ -254,7 +265,7 @@ impl Engine<'_> {
         } else {
             self.policy.delay(0)
         };
-        let (mut offset, mut failures) = (0u64, 0u32);
+        let (mut offset, mut failures, mut starting) = (0u64, 0u32, 0u32);
         loop {
             sleep(wait);
             let Some((state, bytes)) = self.poll(log, &d, offset)? else {
@@ -269,7 +280,17 @@ impl Engine<'_> {
             append_log(log, &bytes)?;
             // Only bytes received count, so a retry asks for the same range.
             offset += bytes.len() as u64;
-            match next(launched, state) {
+            starting = if state == PollState::Starting {
+                starting + 1
+            } else {
+                0
+            };
+            let decision = if exhausted(starting, self.policy.attempts) {
+                Next::Fail(NEVER_STARTED)
+            } else {
+                next(launched, state)
+            };
+            match decision {
                 Next::Wait => {
                     launched = true;
                     wait = self.poll_every;
@@ -454,7 +475,7 @@ mod tests {
              elif [ -s pid ] && kill -0 \"$(cat pid)\" 2>/dev/null; then s=running; \
              elif [ -e status ]; then s=$(cat status); \
              elif [ -s pid ]; then s=dead; \
-             elif [ -e out.log ]; then s=running; \
+             elif [ -e out.log ]; then s=starting; \
              else s=missing; fi; \
              echo \"SHORELINE-STATUS $s\"; tail -c +6 out.log 2>/dev/null; true"
         );
@@ -472,7 +493,7 @@ mod tests {
 
     #[test]
     fn poll_output_parses() {
-        let cases: [(&[u8], PollState, &[u8]); 7] = [
+        let cases: [(&[u8], PollState, &[u8]); 8] = [
             (
                 b"SHORELINE-STATUS running\nhello",
                 PollState::Running,
@@ -481,6 +502,7 @@ mod tests {
             (b"SHORELINE-STATUS running", PollState::Running, b""),
             (b"SHORELINE-STATUS 7\nlog\n", PollState::Exited(7), b"log\n"),
             (b"SHORELINE-STATUS -1\n", PollState::Exited(-1), b""),
+            (b"SHORELINE-STATUS starting\n", PollState::Starting, b""),
             (b"SHORELINE-STATUS dead\n", PollState::Dead, b""),
             (b"SHORELINE-STATUS missing\n", PollState::Missing, b""),
             (
@@ -507,6 +529,7 @@ mod tests {
     fn decisions_after_a_poll() {
         for launched in [false, true] {
             assert_eq!(next(launched, PollState::Running), Next::Wait);
+            assert_eq!(next(launched, PollState::Starting), Next::Wait);
             assert_eq!(next(launched, PollState::Exited(3)), Next::Finished(3));
             assert!(
                 matches!(next(launched, PollState::Dead), Next::Fail(m) if m.contains("exit code"))
@@ -739,6 +762,30 @@ exec "$sh" -c "$1"
                 read(&s.log).contains(&format!("it's|{uid}\n")),
                 "{}",
                 read(&s.log)
+            );
+        }
+
+        #[test]
+        fn launch_that_died_before_the_wrapper_fails_instead_of_polling_forever() {
+            // The launch created out.log, then its connection dropped before
+            // the wrapper started, so no pid is ever written.
+            let s = setup(&[1], &[]);
+            std::fs::create_dir_all(&s.dir).unwrap();
+            std::fs::write(s.dir.join("out.log"), "").unwrap();
+            let start = Instant::now();
+            let err = engine(&s.ssh, 3)
+                .run("t", &s.log, &line(&["true"]), &s.dir)
+                .unwrap_err();
+            assert!(start.elapsed() < Duration::from_secs(10));
+            assert!(
+                matches!(&err, Error::RemoteRun { message, .. } if message.contains("never started")),
+                "{err}"
+            );
+            assert_eq!(launches(&s.log), 1, "a starting run is not relaunched");
+            assert_eq!(
+                read(&s.base.join("count")).trim(),
+                "5",
+                "launch and four starting polls"
             );
         }
 
