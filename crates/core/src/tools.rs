@@ -1039,6 +1039,68 @@ mod tests {
     }
 
     #[test]
+    fn apptainer_argv_places_invocation_env_before_the_image() {
+        let inv = Invocation::new(["help"])
+            .mount("/work/a")
+            .env("RUST_LOG", "info");
+        let cmd = container(Runtime::Apptainer, true).command(&inv).unwrap();
+        let docker_ref = format!("docker://{IMAGE}");
+        assert_eq!(
+            argv(&cmd),
+            [
+                "apptainer",
+                "exec",
+                "--nv",
+                "--env",
+                "RUST_LOG=info",
+                "--bind",
+                "/work/a:/work/a",
+                &docker_ref,
+                "colmap",
+                "help",
+            ]
+        );
+    }
+
+    #[test]
+    fn podman_argv_includes_invocation_env() {
+        let inv = Invocation::new(["help"]).env("RUST_LOG", "info");
+        let cmd = container(Runtime::Podman, true).command(&inv).unwrap();
+        assert_eq!(
+            argv(&cmd),
+            [
+                "podman",
+                "run",
+                "--rm",
+                "--device",
+                "nvidia.com/gpu=all",
+                "--env",
+                "RUST_LOG=info",
+                IMAGE,
+                "colmap",
+                "help",
+            ]
+        );
+    }
+
+    #[test]
+    fn remote_apptainer_argv_includes_invocation_env() {
+        let inv = Invocation::new(["help"])
+            .mount("/work/a")
+            .env("RUST_LOG", "info");
+        let cmd = remote(container(Runtime::Apptainer, true))
+            .command(&inv)
+            .unwrap();
+        let remote_cmd = format!(
+            "'env' 'APPTAINER_CACHEDIR=/srv/cache' 'apptainer' 'exec' '--nv' '--env' 'RUST_LOG=info' '--bind' '/srv/mirror/work/a:/work/a' 'docker://{IMAGE}' 'colmap' 'help'"
+        );
+        assert_eq!(
+            argv(&cmd),
+            ["ssh", "-o", "BatchMode=yes", "gpu", "--", &remote_cmd]
+        );
+    }
+
+    #[test]
     fn spec_validation() {
         let digest = format!("image = \"{IMAGE}\"");
         for (body, needle) in [
