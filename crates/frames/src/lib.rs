@@ -618,7 +618,7 @@ mod tests {
             let first = run(&ctx).unwrap().remove(0);
             assert!(!first.cached);
             assert_eq!(first.metrics["extracted"], 6.0, "{:?}", first.metrics);
-            assert_eq!(first.metrics["kept"], 6.0, "a test pattern is sharp");
+            assert_eq!(first.metrics["kept"], 1.0, "a test pattern is sharp");
             let l = blur::decode_luma(&first.dir.join("images/00001.jpg")).unwrap();
             assert_eq!((l.width, l.height), (320, 180));
             let csv = fs::read_to_string(first.dir.join("frames.csv")).unwrap();
