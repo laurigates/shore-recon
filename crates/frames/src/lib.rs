@@ -282,36 +282,139 @@ pub fn collect_images(dir: &Path) -> Result<Vec<std::path::PathBuf>> {
     Ok(out)
 }
 
+/// Read the first APP1/EXIF segment's TIFF payload from a JPEG, if any.
+fn exif_tiff_bytes(data: &[u8]) -> Option<&[u8]> {
+    // JPEG: SOI (FF D8), then segments. APP1 marker is FF E1.
+    if data.len() < 4 || data[0] != 0xFF || data[1] != 0xD8 {
+        return None;
+    }
+    let mut i = 2usize;
+    while i + 4 <= data.len() {
+        if data[i] != 0xFF {
+            return None;
+        }
+        // skip fill bytes
+        while i < data.len() && data[i] == 0xFF {
+            i += 1;
+        }
+        if i >= data.len() {
+            return None;
+        }
+        let marker = data[i];
+        i += 1;
+        if marker == 0xD9 || marker == 0xDA {
+            // EOI or SOS: stop scanning (SOS begins entropy data)
+            return None;
+        }
+        if i + 2 > data.len() {
+            return None;
+        }
+        let seg_len = u16::from_be_bytes([data[i], data[i + 1]]) as usize;
+        if seg_len < 2 || i + seg_len > data.len() {
+            return None;
+        }
+        let payload = &data[i + 2..i + seg_len];
+        if marker == 0xE1 && payload.starts_with(b"Exif\0\0") {
+            return Some(&payload[6..]);
+        }
+        i += seg_len;
+    }
+    None
+}
+
+fn read_u16(buf: &[u8], off: usize, little: bool) -> Option<u16> {
+    if off + 2 > buf.len() {
+        return None;
+    }
+    let b = [buf[off], buf[off + 1]];
+    Some(if little {
+        u16::from_le_bytes(b)
+    } else {
+        u16::from_be_bytes(b)
+    })
+}
+
+fn read_u32(buf: &[u8], off: usize, little: bool) -> Option<u32> {
+    if off + 4 > buf.len() {
+        return None;
+    }
+    let b = [buf[off], buf[off + 1], buf[off + 2], buf[off + 3]];
+    Some(if little {
+        u32::from_le_bytes(b)
+    } else {
+        u32::from_be_bytes(b)
+    })
+}
+
+/// Walk one IFD and return the value for `tag` as (type, count, raw value bytes offset).
+/// Returns (type, count, value_or_offset) where for types <=4 bytes the value is inline.
+fn ifd_find(tiff: &[u8], ifd_off: usize, tag: u16, little: bool) -> Option<(u16, u32, u32)> {
+    let count = read_u16(tiff, ifd_off, little)? as usize;
+    let mut off = ifd_off + 2;
+    for _ in 0..count {
+        if off + 12 > tiff.len() {
+            return None;
+        }
+        let t = read_u16(tiff, off, little)?;
+        let typ = read_u16(tiff, off + 2, little)?;
+        let cnt = read_u32(tiff, off + 4, little)?;
+        let val = read_u32(tiff, off + 8, little)?;
+        if t == tag {
+            return Some((typ, cnt, val));
+        }
+        off += 12;
+    }
+    None
+}
+
 /// EXIF orientation value (1..=8), defaulting to 1 (upright) when absent.
 pub fn exif_orientation(path: &Path) -> u8 {
-    let Ok(file) = std::fs::File::open(path) else {
+    let Ok(data) = std::fs::read(path) else {
         return 1;
     };
-    let mut reader = std::io::BufReader::new(file);
-    let exif_reader = exif::Reader::new();
-    let Ok(exif) = exif_reader.read_from_container(&mut reader) else {
+    let Some(tiff) = exif_tiff_bytes(&data) else {
         return 1;
     };
-    if let Some(field) = exif.get_field(exif::Tag::Orientation, exif::In::PRIMARY) {
-        if let exif::Value::Short(vals) = &field.value {
-            if let Some(&v) = vals.first() {
-                return v as u8;
-            }
+    if tiff.len() < 8 {
+        return 1;
+    }
+    let little = &tiff[0..2] == b"II";
+    let ifd_off = read_u32(tiff, 4, little).unwrap_or(0) as usize;
+    // tag 0x0112 = Orientation, type SHORT(3)
+    if let Some((typ, _cnt, val)) = ifd_find(tiff, ifd_off, 0x0112, little) {
+        if typ == 3 {
+            // value inline (<=4 bytes for short)
+            return (val & 0xFFFF) as u8;
         }
     }
     1
 }
 
 /// EXIF focal length as (numerator, denominator), if present.
+/// FocalLength (0x920A) lives in the Exif sub-IFD pointed to by tag 0x8769.
 pub fn exif_focal_length(path: &Path) -> Option<(u32, u32)> {
-    let file = std::fs::File::open(path).ok()?;
-    let mut reader = std::io::BufReader::new(file);
-    let exif_reader = exif::Reader::new();
-    let exif = exif_reader.read_from_container(&mut reader).ok()?;
-    let field = exif.get_field(exif::Tag::FocalLength, exif::In::PRIMARY)?;
-    if let exif::Value::Rational(vals) = &field.value {
-        if let Some(r) = vals.first() {
-            return Some((r.num, r.denom));
+    let data = std::fs::read(path).ok()?;
+    let tiff = exif_tiff_bytes(&data)?;
+    if tiff.len() < 8 {
+        return None;
+    }
+    let little = &tiff[0..2] == b"II";
+    let ifd0_off = read_u32(tiff, 4, little)? as usize;
+
+    let mut candidates = vec![ifd0_off];
+    if let Some((_t, _c, off)) = ifd_find(tiff, ifd0_off, 0x8769, little) {
+        candidates.push(off as usize);
+    }
+    for ifd_off in candidates {
+        if let Some((typ, cnt, val)) = ifd_find(tiff, ifd_off, 0x920A, little) {
+            if typ == 5 && cnt > 0 {
+                let off = val as usize;
+                if let (Some(num), Some(den)) =
+                    (read_u32(tiff, off, little), read_u32(tiff, off + 4, little))
+                {
+                    return Some((num, den));
+                }
+            }
         }
     }
     None
@@ -322,6 +425,106 @@ pub fn apply_orientation(img: &mut image::DynamicImage, orientation_u8: u8) {
     if let Some(o) = image::metadata::Orientation::from_exif(orientation_u8) {
         img.apply_orientation(o);
     }
+}
+
+/// Build a minimal EXIF APP1 segment carrying Orientation=1 and, if present,
+/// FocalLength. Returns the full segment bytes (marker + length + payload).
+fn build_exif_app1(orientation: u8, focal: Option<(u32, u32)>) -> Vec<u8> {
+    // TIFF payload (little-endian). IFD has 1 or 2 entries.
+    let n_entries: u16 = if focal.is_some() { 2 } else { 1 };
+    // Layout:
+    // 0..8  header: "II", 0x002A, offset 8
+    // 8..10 entry count
+    // entries: 12 bytes each
+    // next IFD offset: 4 bytes (0)
+    // rational data (if focal): 8 bytes
+    let entries_size = n_entries as usize * 12;
+    let rational_off = 8 + 2 + entries_size + 4;
+    let total_tiff = if focal.is_some() {
+        rational_off + 8
+    } else {
+        rational_off
+    };
+
+    let mut tiff = vec![0u8; total_tiff];
+    tiff[0] = b'I';
+    tiff[1] = b'I';
+    tiff[2] = 0x2A;
+    tiff[3] = 0x00;
+    // offset to IFD = 8
+    tiff[4] = 8;
+    tiff[5] = 0;
+    tiff[6] = 0;
+    tiff[7] = 0;
+
+    let mut off = 8usize;
+    // entry count
+    tiff[off] = n_entries as u8;
+    tiff[off + 1] = (n_entries >> 8) as u8;
+    off += 2;
+
+    // Entry 1: Orientation (0x0112), SHORT, count 1, value 1 (inline)
+    let e = off;
+    tiff[e] = 0x12;
+    tiff[e + 1] = 0x01;
+    tiff[e + 2] = 3; // SHORT
+    tiff[e + 3] = 0;
+    // count = 1
+    tiff[e + 4] = 1;
+    tiff[e + 5] = 0;
+    tiff[e + 6] = 0;
+    tiff[e + 7] = 0;
+    // value = orientation
+    tiff[e + 8] = orientation;
+    tiff[e + 9] = 0;
+    tiff[e + 10] = 0;
+    tiff[e + 11] = 0;
+    off += 12;
+
+    if let Some((num, den)) = focal {
+        // Entry 2: FocalLength (0x920A), RATIONAL, count 1, value offset = rational_off
+        let e = off;
+        tiff[e] = 0x0A;
+        tiff[e + 1] = 0x92;
+        tiff[e + 2] = 5; // RATIONAL
+        tiff[e + 3] = 0;
+        tiff[e + 4] = 1;
+        tiff[e + 5] = 0;
+        tiff[e + 6] = 0;
+        tiff[e + 7] = 0;
+        // offset
+        let o = rational_off as u32;
+        tiff[e + 8] = (o & 0xFF) as u8;
+        tiff[e + 9] = ((o >> 8) & 0xFF) as u8;
+        tiff[e + 10] = ((o >> 16) & 0xFF) as u8;
+        tiff[e + 11] = ((o >> 24) & 0xFF) as u8;
+        // rational data
+        let r = rational_off;
+        let n = num.to_le_bytes();
+        let d = den.to_le_bytes();
+        tiff[r..r + 4].copy_from_slice(&n);
+        tiff[r + 4..r + 8].copy_from_slice(&d);
+        off += 12;
+    }
+
+    // next IFD offset = 0
+    let nifd = off;
+    tiff[nifd] = 0;
+    tiff[nifd + 1] = 0;
+    tiff[nifd + 2] = 0;
+    tiff[nifd + 3] = 0;
+
+    // Build APP1 segment: marker FF E1, length (2 + 6 + tiff.len()), payload "Exif\0\0" + tiff
+    let payload_len = 6 + tiff.len();
+    let seg_len = 2 + payload_len; // length field includes itself
+    let mut seg = Vec::with_capacity(2 + seg_len);
+    seg.push(0xFF);
+    seg.push(0xE1);
+    seg.push(((seg_len >> 8) & 0xFF) as u8);
+    seg.push((seg_len & 0xFF) as u8);
+    seg.extend_from_slice(b"Exif\0\0");
+    seg.extend_from_slice(&tiff);
+    seg
 }
 
 /// Copy/convert one photo into `dest` (JPEG), applying EXIF orientation and
@@ -354,22 +557,20 @@ pub fn process_photo(src: &Path, dest: &Path, max_long_edge: Option<u32>) -> Res
     encoder
         .encode_image(&img)
         .map_err(|e| stage_error(e.to_string()))?;
-    std::fs::write(dest, &buf).map_err(io_error(dest))?;
 
-    // Preserve focal length (and mark orientation as applied = 1).
-    let mut metadata = little_exif::metadata::Metadata::new();
-    metadata.set_tag(little_exif::exif_tag::ExifTag::Orientation(vec![1]));
-    if let Some((num, den)) = focal {
-        metadata.set_tag(little_exif::exif_tag::ExifTag::FocalLength(vec![
-            little_exif::rational::uR64 {
-                nominator: num,
-                denominator: den,
-            },
-        ]));
+    // Inject a minimal EXIF APP1 segment (Orientation=1, FocalLength preserved)
+    // right after the SOI marker.
+    let app1 = build_exif_app1(1, focal);
+    let mut out = Vec::with_capacity(2 + app1.len() + buf.len().saturating_sub(2));
+    // buf starts with SOI (FF D8)
+    if buf.len() >= 2 && buf[0] == 0xFF && buf[1] == 0xD8 {
+        out.extend_from_slice(&buf[..2]);
+        out.extend_from_slice(&app1);
+        out.extend_from_slice(&buf[2..]);
+    } else {
+        out.extend_from_slice(&buf);
     }
-    metadata
-        .write_to_file(dest)
-        .map_err(|e| stage_error(e.to_string()))?;
+    std::fs::write(dest, &out).map_err(io_error(dest))?;
     Ok(())
 }
 
@@ -741,23 +942,25 @@ mod tests {
         let mut buf = Vec::new();
         let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 90);
         enc.encode_image(&dynimg).unwrap();
-        std::fs::write(path, &buf).unwrap();
 
-        let mut metadata = little_exif::metadata::Metadata::new();
-        if let Some(o) = orientation {
-            metadata.set_tag(little_exif::exif_tag::ExifTag::Orientation(vec![o as u16]));
-        }
-        if let Some((n, d)) = focal {
-            metadata.set_tag(little_exif::exif_tag::ExifTag::FocalLength(vec![
-                little_exif::rational::uR64 {
-                    nominator: n,
-                    denominator: d,
-                },
-            ]));
-        }
-        if orientation.is_some() || focal.is_some() {
-            metadata.write_to_file(path).unwrap();
-        }
+        // Inject EXIF (orientation + focal) if requested, mirroring process_photo.
+        let needs_exif = orientation.is_some() || focal.is_some();
+        let out = if needs_exif {
+            let o = orientation.unwrap_or(1);
+            let app1 = build_exif_app1(o, focal);
+            let mut v = Vec::with_capacity(2 + app1.len() + buf.len().saturating_sub(2));
+            if buf.len() >= 2 && buf[0] == 0xFF && buf[1] == 0xD8 {
+                v.extend_from_slice(&buf[..2]);
+                v.extend_from_slice(&app1);
+                v.extend_from_slice(&buf[2..]);
+            } else {
+                v.extend_from_slice(&buf);
+            }
+            v
+        } else {
+            buf
+        };
+        std::fs::write(path, &out).unwrap();
     }
 
     #[test]
