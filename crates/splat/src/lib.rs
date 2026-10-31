@@ -256,8 +256,8 @@ mod tests {
 
     #[test]
     fn total_steps_reads_first_total_steps() {
-        // Fixture lines below are derived from the Brush v0.3.0 source
-        // (brush-cli/src/lib.rs) pending a probe on the GPU host (popos).
+        // Synthetic lines; the real Brush 0.3.0 format is pinned in
+        // `parses_a_real_brush_0_3_0_log`.
         let log = "$ brush --total-steps 30000 --export-every 30000\nRefine iter 100\n";
         assert_eq!(total_steps(log), Some(30000));
         // quoted remote/local command header
@@ -275,8 +275,8 @@ mod tests {
 
     #[test]
     fn completed_iter_takes_max_over_refine_and_eval() {
-        // Fixture lines below are derived from the Brush v0.3.0 source
-        // (brush-cli/src/lib.rs) pending a probe on the GPU host (popos).
+        // Synthetic lines; the real Brush 0.3.0 format is pinned in
+        // `parses_a_real_brush_0_3_0_log`.
         let log = "Refine iter 100\nEval iter 50\nRefine iter 200\n";
         assert_eq!(completed_iter(log), Some(200));
         // ANSI/timestamps mixed
@@ -290,8 +290,8 @@ mod tests {
 
     #[test]
     fn progress_is_completed_over_total_clamped() {
-        // Fixture lines below are derived from the Brush v0.3.0 source
-        // (brush-cli/src/lib.rs) pending a probe on the GPU host (popos).
+        // Synthetic lines; the real Brush 0.3.0 format is pinned in
+        // `parses_a_real_brush_0_3_0_log`.
         let log = "$ brush --total-steps 100\nRefine iter 50\nRefine iter 120\n";
         assert_eq!(Splat.progress("brush", log, None), Some(1.0));
         let log = "$ brush --total-steps 100\nRefine iter 50\n";
@@ -305,6 +305,21 @@ mod tests {
             Splat.progress("image_undistorter", "Refine iter 10", None),
             None
         );
+    }
+
+    #[test]
+    fn parses_a_real_brush_0_3_0_log() {
+        // Copied from logs/brush.log of a 600-step probe on popos (2026-10-31,
+        // RUST_LOG=info, shoreline-brush@sha256:4fe38fb2...). The header is
+        // shortened to the arguments the parser reads; quoting is as logged.
+        let log = "$ ssh -o BatchMode=yes popos -- 'env' 'apptainer' 'exec' '--nv' '--env' 'RUST_LOG=info' \
+                   'brush_app' '/w/dataset' '--total-steps' '600' '--export-every' '600'\n\
+                   [2026-10-31T21:05:09Z INFO  brush_cli] Refine iter 201, 66452 splats.\n\
+                   [2026-10-31T21:05:15Z INFO  brush_cli] Refine iter 401, 68836 splats.\n";
+        assert_eq!(total_steps(log), Some(600));
+        assert_eq!(completed_iter(log), Some(401));
+        let p = Splat.progress("brush", log, None).unwrap();
+        assert!((p - 401.0 / 600.0).abs() < 1e-9);
     }
 
     #[test]
