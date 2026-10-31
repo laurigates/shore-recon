@@ -88,6 +88,12 @@ jobs:
         if: hashFiles(format('containers/{0}/uv.lock', matrix.name)) != ''
         working-directory: containers/${{ matrix.name }}
         run: uv lock --check
+      # The water gating (#12) is plain numpy and scipy, so its tests run without torch or the
+      # image; the image build's `segment --check` only imports regions.py.
+      - name: Test regions.py
+        if: matrix.name == 'segmentation'
+        working-directory: containers/segmentation
+        run: uv run --no-project --with numpy==2.5.4 --with scipy==1.18.1 --with pytest==9.2.0 pytest -q test_regions.py
       - name: Free disk space
         if: matrix.name == 'openmvs' || matrix.name == 'render'
         run: |
