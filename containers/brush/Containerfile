@@ -4,7 +4,7 @@
 # libX11/libXext. Mesa's software Vulkan driver is deliberately absent, so
 # without a GPU Brush fails ("No possible adapter available") instead of
 # silently training on the CPU. Built and pushed by .github/workflows/containers.yml.
-FROM ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac AS fetch
+FROM ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852 AS fetch
 
 ARG BRUSH_VERSION=v0.3.0
 ARG BRUSH_SHA256=4f0f9a8785d1951c62df26aae247c02c5bba32b00f40b06df4e1c9b867399e20
@@ -16,7 +16,7 @@ RUN curl -fsSLo /tmp/brush.tar.xz \
     && tar -xJf /tmp/brush.tar.xz -C /tmp \
     && install -m 755 /tmp/brush-app-x86_64-unknown-linux-gnu/brush_app /usr/local/bin/brush_app
 
-FROM ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac
+FROM ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
 
 LABEL org.opencontainers.image.source="https://github.com/laurigates/data-processing" \
       org.opencontainers.image.description="shoreline-recon splat backend: Brush 0.3.0 (Vulkan)"
