@@ -128,6 +128,20 @@ pub fn decimate_ratio(target_faces: u32, headroom: f64, faces: u64) -> Option<f6
     (ratio < 1.0).then(|| ratio.max(MIN_DECIMATE))
 }
 
+/// The `TextureMesh` arguments for this config, run after `ReconstructMesh`:
+/// with `dense.texture_decimate`, the ratio comes from the face count of
+/// `out/mesh.ply`.
+fn texture_mesh_step_args(out: &Path, config: &Config) -> Result<Vec<OsString>> {
+    let dense = &config.dense;
+    if !dense.texture_decimate {
+        return Ok(texture_mesh_args(out, None));
+    }
+    let mesh = ply::element_counts(&out.join("mesh.ply"))?;
+    let faces = mesh.get("face").copied().unwrap_or(0);
+    let ratio = decimate_ratio(config.post.target_faces, dense.texture_headroom, faces);
+    Ok(texture_mesh_args(out, ratio))
+}
+
 /// The last OpenMVS progress figure in `log`, as a fraction: OpenMVS redraws
 /// `Estimated depth-maps 47 (38.84%, 9s, ETA 14s)...` with carriage returns.
 /// Each pass of a step starts again from 0%.
@@ -228,15 +242,10 @@ impl Stage for Dense {
         })?;
 
         let openmvs = ctx.tools.get(OPENMVS)?;
-        let dense = &ctx.config.dense;
         for (log, mut args) in openmvs_steps(out_dir) {
             // The ratio needs ReconstructMesh's face count, so it is set only now.
-            if log == TEXTURE_MESH && dense.texture_decimate {
-                let mesh = ply::element_counts(&out_dir.join("mesh.ply"))?;
-                let faces = mesh.get("face").copied().unwrap_or(0);
-                let ratio =
-                    decimate_ratio(ctx.config.post.target_faces, dense.texture_headroom, faces);
-                args = texture_mesh_args(out_dir, ratio);
+            if log == TEXTURE_MESH {
+                args = texture_mesh_step_args(out_dir, &ctx.config)?;
             }
             tools.push(openmvs.run(&mount(args), &logs.join(format!("{log}.log")))?);
         }
@@ -394,6 +403,30 @@ mod tests {
         assert_eq!(
             decimate_ratio(1, 0.95, 1_000_000_000_000_000),
             Some(MIN_DECIMATE)
+        );
+    }
+
+    #[test]
+    fn texture_mesh_step_reads_mesh_faces_only_when_decimating() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("mesh.ply"),
+            "ply\nformat binary_little_endian 1.0\nelement vertex 1500000\n\
+             property float x\nelement face 2000000\n\
+             property list uchar int vertex_indices\nend_header\n",
+        )
+        .unwrap();
+        let configs = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../configs");
+        let mut config = Config::load(&configs.join("reposalmi-laajasalo.toml")).unwrap();
+        config.post.target_faces = 500_000;
+        config.dense.texture_headroom = 0.8;
+        let args = strings(&texture_mesh_step_args(dir.path(), &config).unwrap());
+        assert_eq!(args[args.len() - 2..], ["--decimate", "0.200000"]);
+        config.dense.texture_decimate = false;
+        std::fs::remove_file(dir.path().join("mesh.ply")).unwrap();
+        assert_eq!(
+            strings(&texture_mesh_step_args(dir.path(), &config).unwrap()),
+            strings(&texture_mesh_args(dir.path(), None))
         );
     }
 

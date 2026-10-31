@@ -67,8 +67,10 @@ passes `--decimate <ratio>` with ratio = `post.target_faces * dense.texture_head
 - `dense.texture_decimate` (default `true`) turns it on. Dense reads `post.target_faces`
   itself; there is no second target key. With decimation on, `post.target_faces` is part of
   the dense stage config, so changing it re-runs dense.
-- `dense.texture_headroom` (default 0.95, in (0, 1]) leaves room for post removing small
-  components.
+- `dense.texture_headroom` (default 0.95, in (0, 1]) leaves room for the faces OpenMVS adds
+  after decimating: with `--decimate`, `TextureMesh` also closes holes of up to 30 boundary
+  edges (`--close-holes` default) in the same `Mesh::Clean` pass. Post only removes faces, so
+  it cannot push the count back over the target.
 - The flag is omitted when the ratio would be 1 or more, or the mesh has no faces. The ratio is
   written with six decimals and clamped to 1e-6, because OpenMVS reads 0 as "auto".
 - `mesh.ply` and the `mesh_faces` metric remain the undecimated `ReconstructMesh` output.
