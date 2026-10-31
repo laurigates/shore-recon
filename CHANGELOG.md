@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.6.0](https://github.com/laurigates/shore-recon/compare/v0.5.0...v0.6.0) (2026-10-31)
+
+
+### Features
+
+* **core:** estimate progress from runs with the same stage version ([e6dc5de](https://github.com/laurigates/shore-recon/commit/e6dc5de1420942a0c35d8c668be95d0d39815fac))
+* **core:** progress events from inside a stage ([c53da50](https://github.com/laurigates/shore-recon/commit/c53da501dddbe5cda33226e0a2330ad957fcc1c2))
+* **frames:** accept a photo directory as dataset.input ([#23](https://github.com/laurigates/shore-recon/issues/23)) ([9b0c146](https://github.com/laurigates/shore-recon/commit/9b0c146a90c5de3cf47c3d540cfe1e97fc178e15))
+* **frames:** drop near-duplicate frames ([e255ff4](https://github.com/laurigates/shore-recon/commit/e255ff4686e0608d102a305bea567b5c1506d867)), closes [#10](https://github.com/laurigates/shore-recon/issues/10)
+
+
+### Bug Fixes
+
+* **cli:** address review findings on same-stage-version progress estimates ([4a0b8cc](https://github.com/laurigates/shore-recon/commit/4a0b8ccff568f5419db6830bf6a8820a4a68f4be))
+* **frames:** account for dedup drops and harden decode handling ([467716d](https://github.com/laurigates/shore-recon/commit/467716dcc5016f079149e03c2e68de0b77c30ac1))
+* **frames:** address adversarial review findings for photo-directory input ([cf695d6](https://github.com/laurigates/shore-recon/commit/cf695d6a3343037cae0ab989216c069b6209fa03))
+* **frames:** pass event sink to Frames::run after rebase onto main ([e6ee783](https://github.com/laurigates/shore-recon/commit/e6ee7839d8bca627697dc3ca0138b0ba036dc59c))
+* **frames:** rebase onto main (event sink + dedup) and update kept count expectation ([7b82afd](https://github.com/laurigates/shore-recon/commit/7b82afd8c109ea8ea0bed2ff4c2de8ec1e1e06d1))
+* **frames:** remove exif crate deps that fail cargo-deny; parse/write EXIF manually ([fdbacb1](https://github.com/laurigates/shore-recon/commit/fdbacb153e7645e172c751376faa3980cb5c8970))
+* **gpu-host:** address clean-remote review findings ([80d96b0](https://github.com/laurigates/shore-recon/commit/80d96b00de020a696a55728044671eda7dc07ecf))
+* **gpu-host:** remove unreachable cache-pruning code path ([08849f8](https://github.com/laurigates/shore-recon/commit/08849f849f504240adf297211c35cef32afd22ae))
+
 ## [0.5.0](https://github.com/laurigates/shore-recon/compare/v0.4.0...v0.5.0) (2026-10-30)
 
 
