@@ -1040,7 +1040,7 @@ mod tests {
         .unwrap();
         let out = dir.path().join("out");
         std::fs::create_dir(&out).unwrap();
-        let run = Frames.run(&ctx, &Inputs::new(), &out).unwrap();
+        let run = Frames.run(&ctx, &Inputs::new(), &out, &mut |_| {}).unwrap();
         assert!(out.join("images/00001.jpg").is_file());
         assert!(out.join("images/00002.jpg").is_file());
         assert!(run.metrics["extracted"] >= 2.0);
