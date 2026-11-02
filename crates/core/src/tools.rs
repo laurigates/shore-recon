@@ -9,7 +9,7 @@
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -20,6 +20,8 @@ use toml::{Table, Value};
 
 use crate::config::read_table;
 use crate::error::{Error, Result};
+
+mod detached;
 
 pub const TOOLS_FILE: &str = "tools.toml";
 /// `configs/tools.toml`, built in so an installed binary needs no checkout.
@@ -64,6 +66,35 @@ pub struct Remote {
     /// Environment for the remote command, such as `APPTAINER_CACHEDIR`.
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// Consecutive failed ssh calls to the host of a detached run before it
+    /// gives up (ADR-0009, decision 6).
+    #[serde(default = "default_reconnect_attempts")]
+    pub reconnect_attempts: u32,
+    /// Delay before the first reconnect, doubled per further attempt.
+    #[serde(default = "default_reconnect_delay_secs")]
+    pub reconnect_delay_secs: u32,
+    /// Upper bound of the reconnect delay.
+    #[serde(default = "default_reconnect_max_delay_secs")]
+    pub reconnect_max_delay_secs: u32,
+    /// Interval between polls of a running remote command.
+    #[serde(default = "default_poll_secs")]
+    pub poll_secs: u32,
+}
+
+fn default_reconnect_attempts() -> u32 {
+    10
+}
+
+fn default_reconnect_delay_secs() -> u32 {
+    5
+}
+
+fn default_reconnect_max_delay_secs() -> u32 {
+    60
+}
+
+fn default_poll_secs() -> u32 {
+    5
 }
 
 /// Docker's `--user` on a remote host: the remote shell expands it to the ssh
@@ -156,6 +187,18 @@ impl Remote {
         };
         if !self.env.keys().all(|k| key_ok(k)) {
             return Err("remote env names must be [A-Za-z_][A-Za-z0-9_]*");
+        }
+        if self.reconnect_attempts < 1 {
+            return Err("remote reconnect_attempts must be at least 1");
+        }
+        if self.reconnect_delay_secs < 1 {
+            return Err("remote reconnect_delay_secs must be at least 1");
+        }
+        if self.reconnect_max_delay_secs < self.reconnect_delay_secs {
+            return Err("remote reconnect_max_delay_secs must be >= reconnect_delay_secs");
+        }
+        if self.poll_secs < 1 {
+            return Err("remote poll_secs must be at least 1");
         }
         Ok(())
     }
@@ -531,7 +574,9 @@ impl Tool {
         if let Some(dir) = log.parent() {
             std::fs::create_dir_all(dir).map_err(io(dir))?;
         }
-        let file = File::create(log).map_err(io(log))?;
+        File::create(log).map_err(io(log))?;
+        // Appending, as the detached remote run appends to the same log.
+        let file = OpenOptions::new().append(true).open(log).map_err(io(log))?;
         let step = |cmd: &mut Command| -> Result<()> {
             let argv = self::argv(cmd);
             let mut stdout = file.try_clone().map_err(io(log))?;
@@ -562,7 +607,8 @@ impl Tool {
             Some(mut sync) => {
                 step(&mut sync.prepare)?;
                 sync.push.iter_mut().try_for_each(&step)?;
-                step(&mut cmd)?;
+                let remote = self.spec.remote.as_ref().expect("sync implies remote");
+                detached::run(&self.name, remote, &cmd, log)?;
                 sync.pull.iter_mut().try_for_each(&step)?;
             }
         }
@@ -776,6 +822,10 @@ mod tests {
             host: "gpu".into(),
             root: "/srv/mirror".into(),
             env: BTreeMap::from([("APPTAINER_CACHEDIR".into(), "/srv/cache".into())]),
+            reconnect_attempts: 10,
+            reconnect_delay_secs: 5,
+            reconnect_max_delay_secs: 60,
+            poll_secs: 5,
         });
         tool
     }
@@ -924,6 +974,50 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(t.get("x").unwrap().spec.remote.unwrap().host, "h");
+    }
+
+    #[test]
+    fn remote_reconnect_keys() {
+        let base = format!(
+            "[x]\nruntime = \"apptainer\"\nprogram = \"x\"\nimage = \"{IMAGE}\"\n\
+             [x.remote]\nhost = \"h\"\nroot = \"/r\"\n"
+        );
+        let remote = |extra: &str| {
+            let t = tools(&format!("{base}{extra}")).unwrap();
+            let r = t.get("x").unwrap().spec.remote.unwrap();
+            (
+                r.reconnect_attempts,
+                r.reconnect_delay_secs,
+                r.reconnect_max_delay_secs,
+                r.poll_secs,
+            )
+        };
+        assert_eq!(remote(""), (10, 5, 60, 5));
+        assert_eq!(
+            remote(
+                "reconnect_attempts = 3\nreconnect_delay_secs = 2\n\
+                 reconnect_max_delay_secs = 2\npoll_secs = 1\n"
+            ),
+            (3, 2, 2, 1)
+        );
+        for (extra, needle) in [
+            (
+                "reconnect_attempts = 0",
+                "reconnect_attempts must be at least 1",
+            ),
+            (
+                "reconnect_delay_secs = 0",
+                "reconnect_delay_secs must be at least 1",
+            ),
+            ("poll_secs = 0", "poll_secs must be at least 1"),
+            (
+                "reconnect_delay_secs = 10\nreconnect_max_delay_secs = 9",
+                "reconnect_max_delay_secs must be >= reconnect_delay_secs",
+            ),
+        ] {
+            let err = tools_err(&format!("{base}{extra}\n"));
+            assert!(err.contains(needle), "{extra:?}: {err}");
+        }
     }
 
     #[test]
@@ -1361,6 +1455,10 @@ mod tests {
                 env: std::env::var("SHORELINE_TEST_REMOTE_CACHE")
                     .map(|c| BTreeMap::from([("APPTAINER_CACHEDIR".to_owned(), c)]))
                     .unwrap_or_default(),
+                reconnect_attempts: 10,
+                reconnect_delay_secs: 5,
+                reconnect_max_delay_secs: 60,
+                poll_secs: 5,
             });
             let dir = tempfile::tempdir().unwrap();
             let work = dir.path().canonicalize().unwrap();
