@@ -24,7 +24,7 @@ program = "ffmpeg"
 [segment]
 runtime = "docker"
 program = "segment"
-image   = "ghcr.io/laurigates/shoreline-segmentation@sha256:14d626f8194211d47d300547ada57b8593eaa635391ab09bd1c92db90af411b9"
+image   = "ghcr.io/laurigates/shoreline-segmentation@sha256:213e92b0cbf93ed8288c73432fba1c6abe9ecbfc51ee6d1e8755bd9e3e9121c9"
 
 # The local tool profile (ADR-0019): every stage but the videos runs on this
 # machine without a GPU host. A host file with [colmap], [brush] and [openmvs]
