@@ -24,6 +24,9 @@ const MASKS: &str = "masks";
 const SFM: &str = "sfm";
 const COLMAP: &str = "colmap";
 const OPENMVS: &str = "openmvs";
+const TEXTURE_MESH: &str = "TextureMesh";
+/// Smallest ratio passed to `--decimate`: the six decimals it is formatted with.
+const MIN_DECIMATE: f64 = 1e-6;
 
 /// Bump when the output changes for the same config, inputs and tools.
 const REVISION: u32 = 1;
@@ -85,23 +88,58 @@ pub fn openmvs_steps(out: &Path) -> Vec<(&'static str, Vec<OsString>)> {
                 p("mesh.ply"),
             ]),
         ),
-        (
-            "TextureMesh",
-            args(vec![
-                w("TextureMesh"),
-                w("-w"),
-                p(""),
-                w("-i"),
-                p("scene_dense.mvs"),
-                w("-m"),
-                p("mesh.ply"),
-                w("--export-type"),
-                w("glb"),
-                w("-o"),
-                p("mesh_textured.glb"),
-            ]),
-        ),
+        (TEXTURE_MESH, texture_mesh_args(out, None)),
     ]
+}
+
+/// `TextureMesh` arguments, with `--decimate <ratio>` when `ratio` is given.
+pub fn texture_mesh_args(out: &Path, ratio: Option<f64>) -> Vec<OsString> {
+    let p = |name: &str| out.join(name).into_os_string();
+    let w = |v: &str| OsString::from(v);
+    let mut args = vec![
+        w(TEXTURE_MESH),
+        w("-w"),
+        p(""),
+        w("-i"),
+        p("scene_dense.mvs"),
+        w("-m"),
+        p("mesh.ply"),
+        w("--export-type"),
+        w("glb"),
+        w("-o"),
+        p("mesh_textured.glb"),
+    ];
+    if let Some(ratio) = ratio {
+        args.push(w("--decimate"));
+        args.push(OsString::from(format!("{ratio:.6}")));
+    }
+    args
+}
+
+/// The `TextureMesh --decimate` ratio that brings `faces` down to
+/// `target_faces * headroom`, or `None` when the mesh is already at or under
+/// that (or empty). Clamped to 1e-6 so it never formats as `0.000000`, which
+/// OpenMVS reads as "auto".
+pub fn decimate_ratio(target_faces: u32, headroom: f64, faces: u64) -> Option<f64> {
+    if faces == 0 {
+        return None;
+    }
+    let ratio = f64::from(target_faces) * headroom / faces as f64;
+    (ratio < 1.0).then(|| ratio.max(MIN_DECIMATE))
+}
+
+/// The `TextureMesh` arguments for this config, run after `ReconstructMesh`:
+/// with `dense.texture_decimate`, the ratio comes from the face count of
+/// `out/mesh.ply`.
+fn texture_mesh_step_args(out: &Path, config: &Config) -> Result<Vec<OsString>> {
+    let dense = &config.dense;
+    if !dense.texture_decimate {
+        return Ok(texture_mesh_args(out, None));
+    }
+    let mesh = ply::element_counts(&out.join("mesh.ply"))?;
+    let faces = mesh.get("face").copied().unwrap_or(0);
+    let ratio = decimate_ratio(config.post.target_faces, dense.texture_headroom, faces);
+    Ok(texture_mesh_args(out, ratio))
 }
 
 /// The last OpenMVS progress figure in `log`, as a fraction: OpenMVS redraws
@@ -127,7 +165,13 @@ impl Stage for Dense {
     }
 
     fn config(&self, config: &Config) -> serde_json::Value {
-        serde_json::to_value(&config.dense).expect("dense config serialises to JSON")
+        let dense = serde_json::to_value(&config.dense).expect("dense config serialises to JSON");
+        // With decimation on, the mesh depends on post.target_faces too.
+        if config.dense.texture_decimate {
+            serde_json::json!({ "dense": dense, "target_faces": config.post.target_faces })
+        } else {
+            dense
+        }
     }
 
     fn version(&self, ctx: &RunContext) -> Result<String> {
@@ -198,7 +242,11 @@ impl Stage for Dense {
         })?;
 
         let openmvs = ctx.tools.get(OPENMVS)?;
-        for (log, args) in openmvs_steps(out_dir) {
+        for (log, mut args) in openmvs_steps(out_dir) {
+            // The ratio needs ReconstructMesh's face count, so it is set only now.
+            if log == TEXTURE_MESH {
+                args = texture_mesh_step_args(out_dir, &ctx.config)?;
+            }
             tools.push(openmvs.run(&mount(args), &logs.join(format!("{log}.log")))?);
         }
         let textured = out_dir.join("mesh_textured.glb");
@@ -330,6 +378,69 @@ mod tests {
                 "/o/mesh_textured.glb"
             ]
         );
+    }
+
+    #[test]
+    fn texture_mesh_appends_decimate_only_with_a_ratio() {
+        let plain = strings(&texture_mesh_args(Path::new("/o"), None));
+        assert_eq!(plain, strings(&openmvs_steps(Path::new("/o"))[3].1));
+        let decimated = strings(&texture_mesh_args(Path::new("/o"), Some(0.157049)));
+        assert_eq!(decimated[..plain.len()], plain[..]);
+        assert_eq!(decimated[plain.len()..], ["--decimate", "0.157049"]);
+    }
+
+    #[test]
+    fn decimate_ratio_aims_at_the_target_times_headroom() {
+        let ratio = decimate_ratio(500_000, 0.95, 3_024_735).unwrap();
+        assert!((ratio - 475_000.0 / 3_024_735.0).abs() < 1e-12, "{ratio}");
+        assert_eq!(decimate_ratio(500_000, 0.95, 475_000), None);
+        assert_eq!(decimate_ratio(500_000, 0.95, 400_000), None);
+        assert_eq!(
+            decimate_ratio(500_000, 1.0, 500_001).map(|r| r < 1.0),
+            Some(true)
+        );
+        assert_eq!(decimate_ratio(500_000, 0.95, 0), None);
+        assert_eq!(
+            decimate_ratio(1, 0.95, 1_000_000_000_000_000),
+            Some(MIN_DECIMATE)
+        );
+    }
+
+    #[test]
+    fn texture_mesh_step_reads_mesh_faces_only_when_decimating() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("mesh.ply"),
+            "ply\nformat binary_little_endian 1.0\nelement vertex 1500000\n\
+             property float x\nelement face 2000000\n\
+             property list uchar int vertex_indices\nend_header\n",
+        )
+        .unwrap();
+        let configs = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../configs");
+        let mut config = Config::load(&configs.join("reposalmi-laajasalo.toml")).unwrap();
+        config.post.target_faces = 500_000;
+        config.dense.texture_headroom = 0.8;
+        let args = strings(&texture_mesh_step_args(dir.path(), &config).unwrap());
+        assert_eq!(args[args.len() - 2..], ["--decimate", "0.200000"]);
+        config.dense.texture_decimate = false;
+        std::fs::remove_file(dir.path().join("mesh.ply")).unwrap();
+        assert_eq!(
+            strings(&texture_mesh_step_args(dir.path(), &config).unwrap()),
+            strings(&texture_mesh_args(dir.path(), None))
+        );
+    }
+
+    #[test]
+    fn target_faces_is_in_the_config_only_when_decimating() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../configs");
+        let a = Config::load(&dir.join("reposalmi-laajasalo.toml")).unwrap();
+        let mut b = a.clone();
+        b.post.target_faces += 1;
+        assert_ne!(Dense.config(&a), Dense.config(&b));
+        let (mut a, mut b) = (a, b);
+        a.dense.texture_decimate = false;
+        b.dense.texture_decimate = false;
+        assert_eq!(Dense.config(&a), Dense.config(&b));
     }
 
     #[test]

@@ -5,6 +5,7 @@ paths:
   - ".env.example"
   - "containers/**"
   - "configs/**"
+  - "crates/core/src/tools/**"
 ---
 
 # Running Stages on the Remote GPU Host
@@ -63,13 +64,25 @@ or paths into committed files.
   `ssh host bash -s <<'EOF' … EOF`.
 - **Keep everything under `SHORELINE_GPU_ROOT`.** `env.sh` points the Apptainer, Hugging Face,
   uv and torch-extension caches there; a GPU host's root filesystem can be small, and one COLMAP
-  image pull needs ~6.6 GB of layers plus SIF.
+  image pull needs ~6.6 GB of layers plus SIF. Apptainer does not create `APPTAINER_TMPDIR`:
+  if the root has been wiped, every remote stage fails with `failed to create build parent dir:
+  stat …/cache/tmp: no such file or directory`. `mkdir -p` the cache directories named in the
+  host tools file's `env` tables, and expect each image to be pulled again.
 - **Long jobs run detached** (`setsid nohup … &`) and log STEP-START / STEP-OK / STEP-FAIL
   markers; read them with `just -f spike/m0/justfile gpu-status`. A step's own output goes to
   its per-step log, so the markers stay in the main log.
 - **Check the GPU before a run**: `nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv`.
   Another service holding VRAM is normal on a shared box; SIFT and matching fit beside it,
   Brush and patch-match prefer the whole card.
+- **Testing a connection drop needs a failing `ssh`, not a killed one.** The operator's ssh
+  config may multiplex connections (`ControlMaster`). Each poll is then a millisecond-long
+  client on a shared master, so killing the binary's `ssh` children, or tearing the master
+  down with `ssh -O exit <host>`, almost never hits a poll in flight, and the run passes
+  without testing anything. Remote steps call `ssh` through `PATH`. Put a shim first on
+  `PATH` that exits 255 with a connection error while a flag file exists and otherwise
+  `exec`s the real ssh. Control-test both modes, then hold the flag for longer than the first
+  backoff delays. The stage log must show `polling <host> failed (exit status: 255)` entries
+  before the run completes; without them, the drop path never ran.
 
 ## Toolchain facts that bite
 
@@ -80,6 +93,10 @@ or paths into committed files.
   builder looks for `ninja` on `PATH`, not next to the interpreter.
 - **Apptainer, not Docker**, for the COLMAP image: `--nv` for the GPU, `--bind` the root, pull
   by digest. See `tools-plugin:apptainer`.
+- **A bind-mounted script keeps the host file's mode.** Mounting a working-tree script over an
+  image path (`-v segment.py:/usr/local/bin/segment`) to test it against the image's weights
+  drops the Containerfile's `COPY --chmod=755`, and the run fails with exit 127 `executable
+  file not found`. Copy the script to a scratch file, `chmod 755` it, and mount the copy.
 - **AV1 encoding** uses the BtbN static ffmpeg (`get_ffmpeg.sh`); distro ffmpeg builds often
   lack `libsvtav1`.
 - **Headless OpenGL in an image under `apptainer --nv`**: load glvnd's `libOpenGL.so.0` and

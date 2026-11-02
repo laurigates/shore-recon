@@ -43,8 +43,12 @@ Decided by the project owner on 2026-10-30:
    after it). Otherwise, as in CI and `just batch` logs, plain lines: start, each step,
    a heartbeat every 60 s, and finish. There is no flag. Both modes end with a summary
    table on stderr. `run`'s tab-separated summary on stdout is unchanged.
-4. **Splat progress is deferred.** Brush 0.3.0 logs nothing by default; it is said to
-   log `Refine iter N` under `RUST_LOG=info`, which needs a probe on the GPU host first.
+4. **Splat progress comes from `Refine iter N`.** Brush 0.3.0 logs nothing by default.
+   The splat stage passes `RUST_LOG=info` to the brush call, and Brush then logs
+   `Refine iter N, M splats.` at every refine (N = 201, 401, … with the default
+   200-step refine interval) and `Eval iter N` when an eval split is set. Progress is
+   the highest N over the `--total-steps` echoed in the log's command line. Format
+   confirmed by a 600-step probe on the GPU host on 2026-10-31 (#85).
 
 ## Consequences
 

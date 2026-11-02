@@ -91,6 +91,8 @@ pub struct Sfm {
 #[serde(deny_unknown_fields)]
 pub struct Dense {
     pub backend: String,
+    pub texture_decimate: bool,
+    pub texture_headroom: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -235,6 +237,7 @@ impl Config {
             ("frames.blur_threshold", self.frames.blur_threshold),
             ("post.min_component", self.post.min_component),
             ("post.floater_max_water", self.post.floater_max_water),
+            ("dense.texture_headroom", self.dense.texture_headroom),
             ("video.share_max_mib", self.video.share_max_mib),
             (
                 "gates.min_registered_ratio",
@@ -287,6 +290,9 @@ impl Config {
         }
         if !(0.0..=1.0).contains(&self.post.floater_max_water) {
             return invalid("post.floater_max_water must be within [0, 1]");
+        }
+        if !(self.dense.texture_headroom > 0.0 && self.dense.texture_headroom <= 1.0) {
+            return invalid("dense.texture_headroom must be within (0, 1]");
         }
         if self.post.waterline_band_px == 0
             || self.post.target_faces == 0
@@ -612,6 +618,23 @@ mod tests {
         }
         for good in ["reposalmi-laajasalo", "a.b_c-1", "X1"] {
             with_overrides(&format!("[dataset]\nname = \"{good}\"\n")).unwrap();
+        }
+    }
+
+    #[test]
+    fn dense_texture_headroom_is_within_zero_exclusive_and_one() {
+        let defaults = with_overrides("").unwrap();
+        assert!(defaults.dense.texture_decimate);
+        assert_eq!(defaults.dense.texture_headroom, 0.95);
+        for bad in ["0.0", "1.5", "-0.1", "nan", "inf"] {
+            let err = with_overrides(&format!("[dense]\ntexture_headroom = {bad}\n")).unwrap_err();
+            assert!(
+                err.to_string().contains("dense.texture_headroom"),
+                "{bad}: {err}"
+            );
+        }
+        for good in ["1.0", "0.95", "0.01"] {
+            with_overrides(&format!("[dense]\ntexture_headroom = {good}\n")).unwrap();
         }
     }
 
