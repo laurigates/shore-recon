@@ -61,6 +61,25 @@ pub fn mask_path(mask_root: &Path, image: &Path) -> PathBuf {
     mask_root.join(name)
 }
 
+/// The `segment` tool's arguments (ADR-0006): the classes, the frames and
+/// the output directory, then the water gating options (#12).
+fn segment_args(masks: &shoreline_core::config::Masks, images: &Path, raw: &Path) -> Vec<OsString> {
+    vec![
+        "--classes".into(),
+        masks.classes.join(",").into(),
+        images.into(),
+        raw.into(),
+        "--water-min-prob".into(),
+        masks.water_min_prob.to_string().into(),
+        "--water-min-area".into(),
+        masks.water_min_area.to_string().into(),
+        "--water-bridge".into(),
+        masks.water_bridge.to_string().into(),
+        "--water-seed-prob".into(),
+        masks.water_seed_prob.to_string().into(),
+    ]
+}
+
 impl Stage for Masks {
     fn name(&self) -> &'static str {
         NAME
@@ -113,12 +132,7 @@ impl Stage for Masks {
             std::fs::create_dir_all(dir).map_err(io_error(dir))?;
         }
 
-        let args: Vec<OsString> = vec![
-            "--classes".into(),
-            ctx.config.masks.classes.join(",").into(),
-            images.as_os_str().into(),
-            raw.as_os_str().into(),
-        ];
+        let args = segment_args(&ctx.config.masks, &images, &raw);
         let segment = Invocation::new(args).mount(&images).mount(out_dir);
         let record = ctx
             .tools
@@ -334,13 +348,83 @@ mod tests {
         let config = repo_config();
         let base = Masks.config(&config);
         assert_eq!(base, serde_json::to_value(&config.masks).unwrap());
-        let changes: [fn(&mut shoreline_core::config::Masks); 2] =
-            [|m| m.classes.push("tree".into()), |m| m.dilate_px = 4];
+        let changes: [fn(&mut shoreline_core::config::Masks); 6] = [
+            |m| m.classes.push("tree".into()),
+            |m| m.dilate_px = 4,
+            |m| m.water_min_prob = 0.25,
+            |m| m.water_min_area = 0.1,
+            |m| m.water_bridge = 0.05,
+            |m| m.water_seed_prob = 0.9,
+        ];
         for change in changes {
             let mut changed = config.clone();
             change(&mut changed.masks);
             assert_ne!(Masks.config(&changed), base);
         }
+    }
+
+    #[test]
+    fn segment_args_default_vector() {
+        let config = repo_config();
+        let args = segment_args(&config.masks, Path::new("/f/images"), Path::new("/o/raw"));
+        let expected: Vec<OsString> = [
+            "--classes",
+            "water,sea,river,lake,sky,person,boat",
+            "/f/images",
+            "/o/raw",
+            "--water-min-prob",
+            "0.5",
+            "--water-min-area",
+            "0.02",
+            "--water-bridge",
+            "0.02",
+            "--water-seed-prob",
+            "0.7",
+        ]
+        .map(OsString::from)
+        .into();
+        assert_eq!(args, expected);
+    }
+
+    #[test]
+    fn segment_args_follow_the_masks_section() {
+        let mut config = repo_config();
+        config.masks.classes = vec!["sea".into()];
+        config.masks.water_min_prob = 0.75;
+        config.masks.water_min_area = 0.1;
+        config.masks.water_bridge = 0.05;
+        config.masks.water_seed_prob = 0.9;
+        let args = segment_args(&config.masks, Path::new("/f/images"), Path::new("/o/raw"));
+        let expected: Vec<OsString> = [
+            "--classes",
+            "sea",
+            "/f/images",
+            "/o/raw",
+            "--water-min-prob",
+            "0.75",
+            "--water-min-area",
+            "0.1",
+            "--water-bridge",
+            "0.05",
+            "--water-seed-prob",
+            "0.9",
+        ]
+        .map(OsString::from)
+        .into();
+        assert_eq!(args, expected);
+    }
+
+    #[test]
+    fn segment_args_write_whole_thresholds_as_plain_numbers() {
+        // f64::to_string drops the ".0"; Python's float() parses "0" and "1".
+        let mut config = repo_config();
+        config.masks.water_min_prob = 0.0;
+        config.masks.water_min_area = 1.0;
+        let args = segment_args(&config.masks, Path::new("/f"), Path::new("/o"));
+        assert_eq!(
+            args[4..8],
+            ["--water-min-prob", "0", "--water-min-area", "1"].map(OsString::from)
+        );
     }
 
     /// An executable stand-in for the segment tool: records its arguments in

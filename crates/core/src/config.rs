@@ -59,6 +59,20 @@ pub struct Masks {
     pub model: Option<PathBuf>,
     pub classes: Vec<String>,
     pub dilate_px: u32,
+    /// Smallest water probability (the water classes' share of the class
+    /// scores) for a pixel whose argmax is a water class to stay masked (#12).
+    pub water_min_prob: f64,
+    /// Smallest area, as a fraction of the image, of a water component that
+    /// does not touch the bottom row (#12).
+    pub water_min_area: f64,
+    /// Widest gap, as a fraction of the image width, bridged when growing
+    /// water from the seeds over connected argmax-water pixels (#12), so water
+    /// seen past a railing joins the main body.
+    pub water_bridge: f64,
+    /// Smallest mean water probability at which a water region seeds itself
+    /// without touching a seed (#12): confident distant water cut off by a
+    /// dock or a treeline, unlike wet gravel.
+    pub water_seed_prob: f64,
     pub temporal: bool,
 }
 
@@ -237,6 +251,10 @@ impl Config {
             ("frames.blur_threshold", self.frames.blur_threshold),
             ("post.min_component", self.post.min_component),
             ("post.floater_max_water", self.post.floater_max_water),
+            ("masks.water_min_prob", self.masks.water_min_prob),
+            ("masks.water_min_area", self.masks.water_min_area),
+            ("masks.water_bridge", self.masks.water_bridge),
+            ("masks.water_seed_prob", self.masks.water_seed_prob),
             ("dense.texture_headroom", self.dense.texture_headroom),
             ("video.share_max_mib", self.video.share_max_mib),
             (
@@ -290,6 +308,18 @@ impl Config {
         }
         if !(0.0..=1.0).contains(&self.post.floater_max_water) {
             return invalid("post.floater_max_water must be within [0, 1]");
+        }
+        if !(0.0..=1.0).contains(&self.masks.water_min_prob) {
+            return invalid("masks.water_min_prob must be within [0, 1]");
+        }
+        if !(0.0..=1.0).contains(&self.masks.water_min_area) {
+            return invalid("masks.water_min_area must be within [0, 1]");
+        }
+        if !(0.0..=1.0).contains(&self.masks.water_bridge) {
+            return invalid("masks.water_bridge must be within [0, 1]");
+        }
+        if !(0.0..=1.0).contains(&self.masks.water_seed_prob) {
+            return invalid("masks.water_seed_prob must be within [0, 1]");
         }
         if !(self.dense.texture_headroom > 0.0 && self.dense.texture_headroom <= 1.0) {
             return invalid("dense.texture_headroom must be within (0, 1]");
@@ -605,6 +635,34 @@ mod tests {
         ] {
             let err = with_overrides(overrides).unwrap_err().to_string();
             assert!(err.contains(needle), "{overrides:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn masks_water_thresholds_are_within_unit_interval() {
+        let defaults = with_overrides("").unwrap();
+        assert_eq!(defaults.masks.water_min_prob, 0.5);
+        assert_eq!(defaults.masks.water_min_area, 0.02);
+        assert_eq!(defaults.masks.water_bridge, 0.02);
+        assert_eq!(defaults.masks.water_seed_prob, 0.7);
+        for key in [
+            "water_min_prob",
+            "water_min_area",
+            "water_bridge",
+            "water_seed_prob",
+        ] {
+            for value in ["1.5", "-0.1", "nan"] {
+                let err = with_overrides(&format!("[masks]\n{key} = {value}\n"))
+                    .unwrap_err()
+                    .to_string();
+                assert!(
+                    err.contains(&format!("masks.{key}")),
+                    "{key} = {value}: {err}"
+                );
+            }
+            for value in ["0.0", "1.0"] {
+                with_overrides(&format!("[masks]\n{key} = {value}\n")).unwrap();
+            }
         }
     }
 

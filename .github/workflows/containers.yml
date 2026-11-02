@@ -88,6 +88,12 @@ jobs:
         if: hashFiles(format('containers/{0}/uv.lock', matrix.name)) != ''
         working-directory: containers/${{ matrix.name }}
         run: uv lock --check
+      # The water gating (#12) and class_scores run on CPU torch without the model or the image;
+      # the image build's `segment --check` imports both files but calls neither function.
+      - name: Test regions.py and class_scores
+        if: matrix.name == 'segmentation'
+        working-directory: containers/segmentation
+        run: uv run --no-project --index https://download.pytorch.org/whl/cpu --with torch==2.14.1 --with numpy==2.5.4 --with pillow==13.0.0 --with scipy==1.18.1 --with pytest==9.2.0 pytest -q test_regions.py test_class_scores.py
       - name: Free disk space
         if: matrix.name == 'openmvs' || matrix.name == 'render'
         run: |

@@ -19,6 +19,7 @@ check:
     cargo clippy --workspace --all-targets -- -D warnings
     cargo nextest run
     python3 -m unittest discover -s scripts -p 'test_*.py'
+    cd containers/segmentation && uv run --no-project --index https://download.pytorch.org/whl/cpu --with torch==2.14.1 --with numpy==2.5.4 --with pillow==13.0.0 --with scipy==1.18.1 --with pytest==9.2.0 pytest -q test_regions.py test_class_scores.py
 
 # Regenerate the shell completion scripts shipped in the release archives
 completions:
