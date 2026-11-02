@@ -86,5 +86,16 @@ root = "<absolute directory on the host>"
 env  = { APPTAINER_CACHEDIR = "<cache directory on the host>" }
 ```
 
+The container command runs detached on the host and is polled over short ssh calls, so a
+dropped connection is retried instead of killing the run (ADR-0009, decision 6). Four optional
+keys in the same table tune that:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `reconnect_attempts` | 10 | consecutive failed ssh calls before the run gives up |
+| `reconnect_delay_secs` | 5 | delay before the first retry, doubled for each further one |
+| `reconnect_max_delay_secs` | 60 | upper bound of that delay |
+| `poll_secs` | 5 | interval between polls of the running command |
+
 Pass it with `--tools` or `SHORELINE_TOOLS`, or put the tables in the user's
 `tools.toml`.

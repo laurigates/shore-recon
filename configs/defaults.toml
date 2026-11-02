@@ -21,7 +21,9 @@ single_camera = true
 max_features  = 16384
 
 [dense]
-backend = "openmvs"
+backend          = "openmvs"
+texture_decimate = true    # decimate to post.target_faces before TextureMesh (ADR-0011)
+texture_headroom = 0.95    # aim TextureMesh at this fraction of post.target_faces; in (0, 1]
 
 [splat]
 backend = "brush"
