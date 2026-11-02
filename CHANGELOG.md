@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.7.0](https://github.com/laurigates/shore-recon/compare/v0.6.0...v0.7.0) (2026-11-02)
+
+
+### Features
+
+* **dense:** decimate before TextureMesh to reach post.target_faces ([#109](https://github.com/laurigates/shore-recon/issues/109)) ([bce84a4](https://github.com/laurigates/shore-recon/commit/bce84a4d71e9310377b65b3a34b00837b8fa94ee))
+* **splat:** progress percentage from Brush training logs ([#108](https://github.com/laurigates/shore-recon/issues/108)) ([b30c99d](https://github.com/laurigates/shore-recon/commit/b30c99d3b4b6502657d4f8b2912fce00942b413b))
+* **tools:** run remote steps detached so an ssh drop does not kill them ([#112](https://github.com/laurigates/shore-recon/issues/112)) ([e6197ca](https://github.com/laurigates/shore-recon/commit/e6197ca9b16c1d3230b51e31b0942baf5d72c5ba))
+
+
+### Bug Fixes
+
+* **ci:** grant actions: read to the Claude review caller ([#107](https://github.com/laurigates/shore-recon/issues/107)) ([172048e](https://github.com/laurigates/shore-recon/commit/172048e5c39cfd7b803c24b5379e00ffc36432d1))
+* **masks:** keep wet gravel that OneFormer labels as water ([#111](https://github.com/laurigates/shore-recon/issues/111)) ([e224998](https://github.com/laurigates/shore-recon/commit/e224998188c678d08cd983e6cea05d14623f57fe))
+
 ## [0.6.0](https://github.com/laurigates/shore-recon/compare/v0.5.0...v0.6.0) (2026-10-31)
 
 
