@@ -78,8 +78,9 @@ one.
   | Gaussians in → below / unseen / over water → kept | 595,136 → 9,304 / 2,064 / 4,424 → 579,344 | 445,500 → 6,938 / 1,621 / 3,017 → 433,924 |
 
   The mesh rows are from the re-textured meshes (OpenMVS with the cdcseacave/openMVS#1251
-  fix). Vartiosaari's seam-keeping decimation stops at 740,903 faces, above the 500,000 target. Decimating before texturing in the dense
-  stage is the way to reach the target.
+  fix). Vartiosaari's seam-keeping decimation stops at 740,903 faces, above the 500,000 target.
+  Decimating before texturing in the dense stage (ADR-0011, "Decimation before texturing") is
+  the way to reach the target; post's own decimation is unchanged.
 - The stage runs on this machine and needs no tools: about 12 s per dataset.
 - A capture without a level gimbal (handheld phone) fails the tilt gate. It then needs a fixed
   height, or another source for the normal.

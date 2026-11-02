@@ -1,7 +1,8 @@
 name: Claude Code Review
 
 # Automated PR review through the org's reusable workflow; release-please PRs
-# and bot PRs are skipped there.
+# are skipped by the reusable workflow, and bot-actor PRs other than claude[bot]
+# are skipped by this job's `if:`.
 
 on:
   pull_request:
@@ -9,6 +10,8 @@ on:
 
 jobs:
   review:
+    # claude-code-action refuses bot actors outside allowed_bots (claude[bot]), so other bot PRs such as Renovate are skipped here instead of failing red.
+    if: ${{ !endsWith(github.actor, '[bot]') || github.actor == 'claude[bot]' }}
     uses: laurigates/.github/.github/workflows/reusable-claude-review.yml@main
     # Explicit grant so the reusable workflow gets the scopes it declares even
     # though this repo's default workflow permissions are read-only.
@@ -17,6 +20,7 @@ jobs:
       pull-requests: write
       issues: write
       id-token: write
+      actions: read
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
     with:

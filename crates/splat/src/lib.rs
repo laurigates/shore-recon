@@ -41,6 +41,48 @@ pub fn brush_args(dataset: &Path, out: &Path, steps: u32) -> Vec<OsString> {
     args
 }
 
+/// Total training steps from the first `--total-steps N` in `log` (the brush
+/// command line echoes its arguments).
+pub fn total_steps(log: &str) -> Option<u32> {
+    let idx = log.find("--total-steps")?;
+    let rest = &log[idx + "--total-steps".len()..];
+    let mut i = 0;
+    for c in rest.chars() {
+        if c == '\'' || c == '"' || c.is_whitespace() {
+            i += c.len_utf8();
+        } else {
+            break;
+        }
+    }
+    let digits: String = rest[i..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    if digits.is_empty() {
+        return None;
+    }
+    let n: u32 = digits.parse().ok()?;
+    if n == 0 { None } else { Some(n) }
+}
+
+/// The highest iteration number seen in any `Refine iter N` or `Eval iter N`
+/// line of `log`.
+pub fn completed_iter(log: &str) -> Option<u32> {
+    let mut max: Option<u32> = None;
+    for needle in ["Refine iter ", "Eval iter "] {
+        let mut rest = log;
+        while let Some(i) = rest.find(needle) {
+            let after = &rest[i + needle.len()..];
+            let num: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if let Ok(n) = num.parse::<u32>() {
+                max = Some(max.map_or(n, |m| m.max(n)));
+            }
+            rest = &rest[i + needle.len()..];
+        }
+    }
+    max
+}
+
 /// Brush's input: the undistorter's `images/`, the model in `sparse/0/` and
 /// `masks/`. The undistorter's `stereo/` and scripts are removed.
 fn tidy_dataset(dataset: &Path) -> Result<PathBuf> {
@@ -85,6 +127,18 @@ impl Stage for Splat {
         vec![undistort::LOG.to_owned(), BRUSH.to_owned()]
     }
 
+    fn progress(&self, step: &str, log: &str, _frames: Option<usize>) -> Option<f64> {
+        if step != BRUSH {
+            return None;
+        }
+        let total = total_steps(log)? as f64;
+        if total <= 0.0 {
+            return None;
+        }
+        let completed = completed_iter(log)? as f64;
+        Some((completed / total).clamp(0.0, 1.0))
+    }
+
     fn run(
         &self,
         ctx: &RunContext,
@@ -125,7 +179,10 @@ impl Stage for Splat {
         let steps = ctx.config.splat.steps;
         let brush = ctx.tools.get(BRUSH)?;
         let args = brush_args(&dataset, out_dir, steps);
-        tools.push(brush.run(&mount(args), &logs.join(format!("{BRUSH}.log")))?);
+        tools.push(brush.run(
+            &mount(args).env("RUST_LOG", "info"),
+            &logs.join(format!("{BRUSH}.log")),
+        )?);
         let exported = out_dir.join(format!("splat_{steps}.ply"));
         let splat = out_dir.join("splat.ply");
         std::fs::rename(&exported, &splat).map_err(|_| {
@@ -154,6 +211,9 @@ fn stage_error(message: impl Into<String>) -> Error {
     }
 }
 
+// Fixture lines below are derived from the Brush v0.3.0 source
+// (brush-cli/src/lib.rs) pending a probe on the GPU host (popos), where
+// they should be replaced with lines copied from a real log.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,6 +252,74 @@ mod tests {
                 "splat_{iter}.ply"
             ]
         );
+    }
+
+    #[test]
+    fn total_steps_reads_first_total_steps() {
+        // Synthetic lines; the real Brush 0.3.0 format is pinned in
+        // `parses_a_real_brush_0_3_0_log`.
+        let log = "$ brush --total-steps 30000 --export-every 30000\nRefine iter 100\n";
+        assert_eq!(total_steps(log), Some(30000));
+        // quoted remote/local command header
+        let log = "'brush' --total-steps '7000' --export-every 7000\n";
+        assert_eq!(total_steps(log), Some(7000));
+        // ANSI/timestamp prefixed line
+        let log = "\x1b[32m2024-01-01T00:00:00Z\x1b[0m brush --total-steps 1000\n";
+        assert_eq!(total_steps(log), Some(1000));
+        assert_eq!(total_steps("no steps here"), None);
+        assert_eq!(total_steps(""), None);
+        assert_eq!(total_steps("--total-steps 0"), None);
+        // malformed / no digits
+        assert_eq!(total_steps("--total-steps abc"), None);
+    }
+
+    #[test]
+    fn completed_iter_takes_max_over_refine_and_eval() {
+        // Synthetic lines; the real Brush 0.3.0 format is pinned in
+        // `parses_a_real_brush_0_3_0_log`.
+        let log = "Refine iter 100\nEval iter 50\nRefine iter 200\n";
+        assert_eq!(completed_iter(log), Some(200));
+        // ANSI/timestamps mixed
+        let log = "\x1b[36m[2024-01-01 00:00:00] Refine iter 42\x1b[0m\nEval iter 999\n";
+        assert_eq!(completed_iter(log), Some(999));
+        assert_eq!(completed_iter("nothing"), None);
+        // malformed ignored
+        let log = "Refine iter abc\nEval iter \n";
+        assert_eq!(completed_iter(log), None);
+    }
+
+    #[test]
+    fn progress_is_completed_over_total_clamped() {
+        // Synthetic lines; the real Brush 0.3.0 format is pinned in
+        // `parses_a_real_brush_0_3_0_log`.
+        let log = "$ brush --total-steps 100\nRefine iter 50\nRefine iter 120\n";
+        assert_eq!(Splat.progress("brush", log, None), Some(1.0));
+        let log = "$ brush --total-steps 100\nRefine iter 50\n";
+        assert_eq!(Splat.progress("brush", log, None), Some(0.5));
+        let log = "$ brush --total-steps 100\n";
+        assert_eq!(Splat.progress("brush", log, None), None);
+        // N beyond total clamped via progress already; unknown step None
+        let log = "'brush' --total-steps 100\nRefine iter 50\n";
+        assert_eq!(Splat.progress("brush", log, None), Some(0.5));
+        assert_eq!(
+            Splat.progress("image_undistorter", "Refine iter 10", None),
+            None
+        );
+    }
+
+    #[test]
+    fn parses_a_real_brush_0_3_0_log() {
+        // Copied from logs/brush.log of a 600-step probe on popos (2026-10-31,
+        // RUST_LOG=info, shoreline-brush@sha256:4fe38fb2...). The header is
+        // shortened to the arguments the parser reads; quoting is as logged.
+        let log = "$ ssh -o BatchMode=yes popos -- 'env' 'apptainer' 'exec' '--nv' '--env' 'RUST_LOG=info' \
+                   'brush_app' '/w/dataset' '--total-steps' '600' '--export-every' '600'\n\
+                   [2026-10-31T21:05:09Z INFO  brush_cli] Refine iter 201, 66452 splats.\n\
+                   [2026-10-31T21:05:15Z INFO  brush_cli] Refine iter 401, 68836 splats.\n";
+        assert_eq!(total_steps(log), Some(600));
+        assert_eq!(completed_iter(log), Some(401));
+        let p = Splat.progress("brush", log, None).unwrap();
+        assert!((p - 401.0 / 600.0).abs() < 1e-9);
     }
 
     #[test]

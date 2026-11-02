@@ -327,6 +327,9 @@ pub struct Invocation {
     /// Absolute directories without `..` that the tool reads or writes.
     /// Containers bind-mount each at the same path; native runs ignore them.
     pub mounts: Vec<PathBuf>,
+    /// Extra environment variables for the tool process. Native runs apply
+    /// them with `Command::env`; container runs pass `--env K=V`.
+    pub env: Vec<(String, String)>,
 }
 
 impl Invocation {
@@ -338,11 +341,17 @@ impl Invocation {
         Self {
             args: args.into_iter().map(Into::into).collect(),
             mounts: Vec::new(),
+            env: Vec::new(),
         }
     }
 
     pub fn mount(mut self, dir: impl Into<PathBuf>) -> Self {
         self.mounts.push(dir.into());
+        self
+    }
+
+    pub fn env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.env.push((key.into(), value.into()));
         self
     }
 }
@@ -366,11 +375,30 @@ impl Tool {
     /// process is the ssh call; see [`Tool::sync`] for its file transfers.
     pub fn command(&self, inv: &Invocation) -> Result<Command> {
         self.spec.validate(&self.name)?;
+        let key_ok = |k: &str| {
+            let mut chars = k.chars();
+            match chars.next() {
+                Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+                _ => return false,
+            }
+            chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        };
+        for (k, _) in &inv.env {
+            if !key_ok(k) {
+                return Err(Error::Tools(format!(
+                    "{}: env names must be [A-Za-z_][A-Za-z0-9_]*",
+                    self.name
+                )));
+            }
+        }
         let (engine, prefix, gpu_flag, bind_flag): (_, &[&str], &[&str], _) =
             match self.spec.runtime {
                 Runtime::Native => {
                     let mut cmd = Command::new(&self.spec.program);
                     cmd.args(&inv.args);
+                    for (k, v) in &inv.env {
+                        cmd.env(k, v);
+                    }
                     return Ok(cmd);
                 }
                 Runtime::Podman => (
@@ -400,6 +428,10 @@ impl Tool {
         }
         if self.spec.gpu {
             words.extend(gpu_flag.iter().map(Word::from));
+        }
+        for (k, v) in &inv.env {
+            words.push(Word::from("--env"));
+            words.push(Word::from(format!("{k}={v}")));
         }
         for dir in &inv.mounts {
             let mut bind = match remote {
@@ -1063,6 +1095,103 @@ mod tests {
             let err = tool.command(&Invocation::default().mount(bad)).unwrap_err();
             assert!(matches!(&err, Error::Tools(m) if m.contains(bad)), "{err}");
         }
+    }
+
+    #[test]
+    fn native_env_is_applied_without_changing_argv() {
+        let inv = Invocation::new(["x"]).env("RUST_LOG", "info");
+        let cmd = native("ffmpeg").command(&inv).unwrap();
+        assert_eq!(argv(&cmd), ["ffmpeg", "x"]);
+        assert!(
+            cmd.get_envs().any(|(k, v)| {
+                k == "RUST_LOG" && v.map(|x| x.to_string_lossy() == "info").unwrap_or(false)
+            }),
+            "{:?}",
+            cmd.get_envs().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn docker_argv_includes_invocation_env() {
+        let inv = Invocation::new(["help"]).env("RUST_LOG", "info");
+        let cmd = container(Runtime::Docker, false).command(&inv).unwrap();
+        let args = argv(&cmd);
+        assert!(
+            args.windows(2).any(|w| w == ["--env", "RUST_LOG=info"]),
+            "{args:?}"
+        );
+    }
+
+    #[test]
+    fn remote_argv_includes_invocation_env() {
+        let tool = remote(container(Runtime::Docker, false));
+        let cmd = tool
+            .command(&Invocation::new(["help"]).env("RUST_LOG", "info"))
+            .unwrap();
+        let line = argv(&cmd).pop().unwrap();
+        assert!(line.contains("'--env' 'RUST_LOG=info'"), "{line}");
+    }
+
+    #[test]
+    fn apptainer_argv_places_invocation_env_before_the_image() {
+        let inv = Invocation::new(["help"])
+            .mount("/work/a")
+            .env("RUST_LOG", "info");
+        let cmd = container(Runtime::Apptainer, true).command(&inv).unwrap();
+        let docker_ref = format!("docker://{IMAGE}");
+        assert_eq!(
+            argv(&cmd),
+            [
+                "apptainer",
+                "exec",
+                "--nv",
+                "--env",
+                "RUST_LOG=info",
+                "--bind",
+                "/work/a:/work/a",
+                &docker_ref,
+                "colmap",
+                "help",
+            ]
+        );
+    }
+
+    #[test]
+    fn podman_argv_includes_invocation_env() {
+        let inv = Invocation::new(["help"]).env("RUST_LOG", "info");
+        let cmd = container(Runtime::Podman, true).command(&inv).unwrap();
+        assert_eq!(
+            argv(&cmd),
+            [
+                "podman",
+                "run",
+                "--rm",
+                "--device",
+                "nvidia.com/gpu=all",
+                "--env",
+                "RUST_LOG=info",
+                IMAGE,
+                "colmap",
+                "help",
+            ]
+        );
+    }
+
+    #[test]
+    fn remote_apptainer_argv_includes_invocation_env() {
+        let inv = Invocation::new(["help"])
+            .mount("/work/a")
+            .env("RUST_LOG", "info");
+        let cmd = remote(container(Runtime::Apptainer, true))
+            .command(&inv)
+            .unwrap();
+        let remote_cmd = format!(
+            "'env' 'APPTAINER_CACHEDIR=/srv/cache' 'apptainer' 'exec' '--nv' '--env' 'RUST_LOG=info' '--bind' '/srv/mirror/work/a:/work/a' 'docker://{IMAGE}' 'colmap' 'help'"
+        );
+        assert_eq!(
+            argv(&cmd),
+            ["ssh", "-o", "BatchMode=yes", "gpu", "--", &remote_cmd]
+        );
     }
 
     #[test]

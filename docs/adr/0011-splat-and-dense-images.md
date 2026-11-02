@@ -56,3 +56,23 @@ OpenMVS.
   as each tool expects: `00001.png` for Brush and `00001.mask.png` for OpenMVS, against
   COLMAP's `00001.jpg.png`.
 - Brush runs about 8% slower in the container than natively in the probe.
+
+## Decimation before texturing
+
+Added 2026-10-31 (#55). Post's seam-keeping decimation stops above `post.target_faces` on
+vartiosaari (ADR-0012), so dense now decimates inside `TextureMesh`, which then builds its atlas
+for the reduced mesh. After `ReconstructMesh`, dense reads the face count of `mesh.ply` and
+passes `--decimate <ratio>` with ratio = `post.target_faces * dense.texture_headroom / faces`.
+
+- `dense.texture_decimate` (default `true`) turns it on. Dense reads `post.target_faces`
+  itself; there is no second target key. With decimation on, `post.target_faces` is part of
+  the dense stage config, so changing it re-runs dense.
+- `dense.texture_headroom` (default 0.95, in (0, 1]) leaves room for the faces OpenMVS adds
+  after decimating: with `--decimate`, `TextureMesh` also closes holes of up to 30 boundary
+  edges (`--close-holes` default) in the same `Mesh::Clean` pass. Post only removes faces, so
+  it cannot push the count back over the target.
+- The flag is omitted when the ratio would be 1 or more, or the mesh has no faces. The ratio is
+  written with six decimals and clamped to 1e-6, because OpenMVS reads 0 as "auto".
+- `mesh.ply` and the `mesh_faces` metric remain the undecimated `ReconstructMesh` output.
+- Pending: re-running dense on both datasets on the GPU host, the resulting face counts, and a
+  speckle check of the mesh videos.
