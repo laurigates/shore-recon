@@ -126,16 +126,83 @@ def test_output_is_bool_with_input_shape():
     assert out.shape == mask.shape
 
 
+# bridge
+
+
+def test_bridge_fills_a_gap_narrower_than_the_disk():
+    mask = grid(["###.###", "###.###", "###.###"])
+    np.testing.assert_array_equal(regions.bridge(mask, 1.0), np.ones((3, 7), dtype=bool))
+
+
+def test_bridge_keeps_a_wide_gap():
+    mask = grid(["##.....##", "##.....##"])
+    np.testing.assert_array_equal(regions.bridge(mask, 1.0), mask)
+
+
+def test_bridge_does_not_shrink_at_the_border():
+    mask = grid(["##..", "##..", "...."])
+    out = regions.bridge(mask, 1.0)
+    assert out[mask].all()
+
+
+def test_bridge_of_a_full_mask_is_full():
+    # scipy's edt of an array with no background is not a distance map.
+    full = np.ones((3, 4), dtype=bool)
+    np.testing.assert_array_equal(regions.bridge(full, 2.0), full)
+
+
+def test_bridge_zero_radius_and_empty_mask():
+    mask = grid(["#.#"])
+    np.testing.assert_array_equal(regions.bridge(mask, 0.0), mask)
+    np.testing.assert_array_equal(regions.bridge(np.zeros((2, 2), dtype=bool), 3.0), np.zeros((2, 2), dtype=bool))
+
+
+# grow
+
+
+def test_grow_adds_candidates_connected_to_a_seed():
+    seed = grid(["....", "....", "####"])
+    candidate = grid(["#...", "####", "####"])
+    np.testing.assert_array_equal(regions.grow(seed, candidate, 0.0), candidate)
+
+
+def test_grow_drops_candidates_with_no_seed():
+    seed = grid([".....", ".....", "#####"])
+    candidate = grid(["#....", ".....", "#####"])
+    np.testing.assert_array_equal(regions.grow(seed, candidate, 0.0), seed)
+
+
+def test_grow_bridges_a_thin_occluder_but_never_returns_it():
+    # A railing bar (column 2) separates the candidate on the left from the seed.
+    seed = grid(["...##", "...##"])
+    candidate = grid(["##.##", "##.##"])
+    np.testing.assert_array_equal(regions.grow(seed, candidate, 0.0), seed)
+    np.testing.assert_array_equal(regions.grow(seed, candidate, 1.0), candidate)
+
+
+def test_grow_rejects_mismatched_shapes():
+    with pytest.raises(ValueError):
+        regions.grow(np.zeros((2, 2), dtype=bool), np.zeros((2, 3), dtype=bool), 0.0)
+
+
 # combine
 
 WATER, SKY, GRAVEL = 21, 2, 13
 
 
 def test_low_prob_water_dropped_but_low_prob_sky_kept():
+    # The low-prob water pixel touches the confident one only diagonally, so it is not grown back.
+    best = np.array([[WATER, SKY], [SKY, WATER]])
+    prob = np.array([[0.2, 0.2], [0.9, 0.9]])
+    out = regions.combine(best, prob, [WATER], [SKY], 0.5, 0.0, 0.0)
+    np.testing.assert_array_equal(out, [[False, True], [True, True]])
+
+
+def test_low_prob_water_touching_confident_water_is_grown_back():
     best = np.array([[WATER, SKY], [WATER, WATER]])
     prob = np.array([[0.2, 0.2], [0.9, 0.9]])
-    out = regions.combine(best, prob, [WATER], [SKY], 0.5, 0.0)
-    np.testing.assert_array_equal(out, [[False, True], [True, True]])
+    out = regions.combine(best, prob, [WATER], [SKY], 0.5, 0.0, 0.0)
+    np.testing.assert_array_equal(out, [[True, True], [True, True]])
 
 
 def test_inland_water_blob_dropped_bottom_water_kept():
@@ -147,24 +214,61 @@ def test_inland_water_blob_dropped_bottom_water_kept():
     expected = np.zeros((6, 6), dtype=bool)
     expected[4:, :] = True
     expected[0, 4:] = True
-    out = regions.combine(best, prob, [WATER], [SKY], 0.5, 0.1)
+    out = regions.combine(best, prob, [WATER], [SKY], 0.5, 0.1, 0.0)
     np.testing.assert_array_equal(out, expected)
 
 
 def test_zero_thresholds_equal_plain_argmax():
     best = np.array([[WATER, GRAVEL, SKY], [GRAVEL, WATER, GRAVEL]])
     prob = np.zeros((2, 3))
-    out = regions.combine(best, prob, [WATER], [SKY], 0.0, 0.0)
+    out = regions.combine(best, prob, [WATER], [SKY], 0.0, 0.0, 0.0)
     np.testing.assert_array_equal(out, np.isin(best, [WATER, SKY]))
+
+
+def test_water_split_by_the_probability_cut_is_grown_back():
+    # Lauri's 00044 failure in miniature: the sea along the bottom, a seam whose
+    # probability is under min_prob across it, and a small water region above.
+    best = np.full((8, 8), GRAVEL)
+    best[1:, 2:6] = WATER
+    prob = np.full((8, 8), 0.9)
+    prob[1:5, :] = 0.3  # the seam and the region above it
+    out = regions.combine(best, prob, [WATER], [], 0.5, 0.5, 0.0)
+    expected = np.zeros((8, 8), dtype=bool)
+    expected[1:, 2:6] = True
+    np.testing.assert_array_equal(out, expected)
+
+
+def test_low_prob_gravel_away_from_the_water_stays_dropped():
+    best = np.full((10, 10), GRAVEL)
+    best[0:2, 0:2] = WATER  # wet gravel, top left
+    best[7:, :] = WATER  # the sea
+    prob = np.full((10, 10), 0.9)
+    prob[0:2, 0:2] = 0.3
+    out = regions.combine(best, prob, [WATER], [], 0.5, 0.2, 0.2)  # bridge 2 px
+    expected = np.zeros((10, 10), dtype=bool)
+    expected[7:, :] = True
+    np.testing.assert_array_equal(out, expected)
+
+
+def test_water_behind_a_railing_is_bridged():
+    best = np.full((6, 10), GRAVEL)
+    best[:, 0:4] = WATER  # low-prob water seen past the railing
+    best[:, 5:] = WATER  # the sea, touching the bottom
+    prob = np.full((6, 10), 0.9)
+    prob[:, 0:4] = 0.3
+    no_bridge = regions.combine(best, prob, [WATER], [], 0.5, 0.5, 0.0)
+    bridged = regions.combine(best, prob, [WATER], [], 0.5, 0.5, 0.1)  # 1 px
+    np.testing.assert_array_equal(no_bridge, (best == WATER) & (np.arange(10) >= 5))
+    np.testing.assert_array_equal(bridged, best == WATER)
 
 
 def test_empty_water_ids():
     best = np.array([[WATER, SKY]])
-    out = regions.combine(best, np.ones((1, 2)), [], [SKY], 0.5, 0.02)
+    out = regions.combine(best, np.ones((1, 2)), [], [SKY], 0.5, 0.02, 0.0)
     np.testing.assert_array_equal(out, [[False, True]])
 
 
 def test_empty_other_ids():
     best = np.array([[WATER, SKY]])
-    out = regions.combine(best, np.ones((1, 2)), [WATER], [], 0.5, 0.02)
+    out = regions.combine(best, np.ones((1, 2)), [WATER], [], 0.5, 0.02, 0.0)
     np.testing.assert_array_equal(out, [[True, False]])

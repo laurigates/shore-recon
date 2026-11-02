@@ -203,6 +203,7 @@ classes   = ["water", "sea", "river", "lake", "sky", "person", "boat"]
 dilate_px = 8
 water_min_prob = 0.5
 water_min_area = 0.02
+water_bridge = 0.02
 temporal  = false
 
 [sfm]

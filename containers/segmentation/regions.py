@@ -3,7 +3,13 @@
 OneFormer sometimes labels wet gravel as water (#12). Such pixels tend to
 carry a low share of the water classes' score, or to form small regions away
 from the bottom of the frame, where the shoreline footage has its water.
-`combine` drops both and leaves every other class as plain argmax.
+`combine` drops them and leaves every other class as plain argmax.
+
+Real water can carry a low share too: the band along a shoreline, or water
+seen through a railing. Cutting by probability first splits such water from
+the main body, so `combine` uses the cut only to find seeds and then grows
+them back over every argmax-water pixel connected to them (hysteresis), with
+thin occluders bridged.
 """
 
 from collections.abc import Collection
@@ -44,6 +50,39 @@ def keep_connected(mask: np.ndarray, min_area: float) -> np.ndarray:
     return keep[labels]
 
 
+def bridge(mask: np.ndarray, radius: float) -> np.ndarray:
+    """`mask` closed with a disk of `radius` pixels (dilate, then erode).
+
+    Gaps narrower than about 2 * radius, such as railing bars across water,
+    are filled; the result contains `mask`. Pixels near the image border are
+    not eroded from outside, so the closing does not shrink at the edges.
+    With `radius <= 0` the mask is returned unchanged.
+    """
+    if radius <= 0 or not mask.any():
+        return mask.astype(bool, copy=True)
+    dilated = ndimage.distance_transform_edt(~mask) <= radius
+    if dilated.all():  # edt of an array with no background is not a distance map
+        return dilated
+    return ndimage.distance_transform_edt(dilated) > radius
+
+
+def grow(seed: np.ndarray, candidate: np.ndarray, radius: float) -> np.ndarray:
+    """`seed` plus every `candidate` pixel connected to it.
+
+    Connectivity is 4-connected on `candidate` closed by `bridge(candidate,
+    radius)`, so a candidate region separated from a seed only by a gap
+    narrower than the bridge still joins it. The bridging pixels themselves
+    are never returned: the result is `seed | (candidate & reached)`.
+    """
+    if seed.shape != candidate.shape:
+        raise ValueError(f"seed {seed.shape} and candidate {candidate.shape} differ in shape")
+    labels, n = ndimage.label(bridge(candidate | seed, radius))
+    reached = np.zeros(n + 1, dtype=bool)
+    reached[np.unique(labels[seed])] = True
+    reached[0] = False
+    return seed | (candidate & reached[labels])
+
+
 def combine(
     best_class: np.ndarray,
     water_prob: np.ndarray,
@@ -51,15 +90,21 @@ def combine(
     other_ids: Collection[int],
     min_prob: float,
     min_area: float,
+    bridge_frac: float,
 ) -> np.ndarray:
-    """The final class mask: gated, connected water plus argmax other classes.
+    """The final class mask: water grown from confident seeds, plus argmax other classes.
 
     `best_class` is the per-pixel argmax class id and `water_prob` the
-    per-pixel share of the water classes' score. A water pixel (argmax in
-    `water_ids`) is kept if it passes `gate_by_probability` and then
-    `keep_connected`; a pixel whose argmax is in `other_ids` is always kept.
-    With both thresholds 0 the result equals `np.isin(best_class, water_ids
-    + other_ids)`.
+    per-pixel share of the water classes' score. Seeds are the water pixels
+    (argmax in `water_ids`) that pass `gate_by_probability` and then
+    `keep_connected`. `grow` then adds every argmax-water pixel connected to a
+    seed, bridging gaps up to `bridge_frac` of the image width. A water region
+    with no seed, such as wet gravel away from the water, is dropped; a pixel
+    whose argmax is in `other_ids` is always kept. With `min_prob` and
+    `min_area` both 0 the result equals `np.isin(best_class, water_ids +
+    other_ids)`.
     """
-    water = gate_by_probability(np.isin(best_class, list(water_ids)), water_prob, min_prob)
-    return keep_connected(water, min_area) | np.isin(best_class, list(other_ids))
+    candidate = np.isin(best_class, list(water_ids))
+    seed = keep_connected(gate_by_probability(candidate, water_prob, min_prob), min_area)
+    water = grow(seed, candidate, bridge_frac * best_class.shape[-1])
+    return water | np.isin(best_class, list(other_ids))

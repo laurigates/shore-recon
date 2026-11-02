@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Semantic class masks for the masks stage (ADR-0006).
 
-    segment --classes water,sea,sky IMAGES OUT [--water-min-prob P] [--water-min-area A]
+    segment --classes water,sea,sky IMAGES OUT [--water-min-prob P] [--water-min-area A] [--water-bridge B]
     segment --check --classes water,sea,sky
 
 For every IMAGES/*.jpg, writes OUT/<image name>.png: 8-bit, 255 where the
@@ -14,11 +14,15 @@ a threshold outside [0, 1].
 
 The water classes among the given ones (water, sea, river, lake) are gated so
 that wet gravel is not masked as water (#12); other classes are plain argmax.
-A pixel whose argmax is a water class is kept only if its water probability
+Seeds are the pixels whose argmax is a water class, whose water probability
 (the water classes' share of the summed class scores) is at least
---water-min-prob (default 0.5), and only if its 4-connected water component
-touches the bottom row or covers at least --water-min-area of the image
-(default 0.02). Both at 0 give plain argmax for every class.
+--water-min-prob (default 0.5), and whose 4-connected seed component touches
+the bottom row or covers at least --water-min-area of the image (default
+0.02). Every argmax-water pixel connected to a seed is then kept, with gaps up
+to --water-bridge of the image width bridged (default 0.02; railing bars), so
+low-probability water next to the main body stays masked while wet gravel away
+from it does not. --water-min-prob and --water-min-area at 0 give plain argmax
+for every class.
 """
 
 import argparse
@@ -90,13 +94,19 @@ def main() -> int:
     # both flags from [masks], which is the source of truth.
     ap.add_argument("--water-min-prob", type=float, default=0.5, help="minimum water probability (default 0.5)")
     ap.add_argument("--water-min-area", type=float, default=0.02, help="minimum inland water area fraction (default 0.02)")
+    ap.add_argument("--water-bridge", type=float, default=0.02, help="gap bridged between water regions, fraction of width (default 0.02)")
     ap.add_argument("images", type=Path, nargs="?")
     ap.add_argument("out", type=Path, nargs="?")
     args = ap.parse_args()
     if not args.check and (args.images is None or args.out is None):
         ap.error("IMAGES and OUT are required unless --check is given")
 
-    for flag, value in (("--water-min-prob", args.water_min_prob), ("--water-min-area", args.water_min_area)):
+    thresholds = (
+        ("--water-min-prob", args.water_min_prob),
+        ("--water-min-area", args.water_min_area),
+        ("--water-bridge", args.water_bridge),
+    )
+    for flag, value in thresholds:
         if not 0.0 <= value <= 1.0:  # also rejects nan
             print(f"segment: {flag} must be within [0, 1]", file=sys.stderr)
             return 2
@@ -136,7 +146,7 @@ def main() -> int:
         with torch.no_grad():
             outputs = model(**inputs)
         best_class, water_prob = class_scores(outputs, image.size[::-1], water_ids)
-        mask = regions.combine(best_class, water_prob, water_ids, other_ids, args.water_min_prob, args.water_min_area)
+        mask = regions.combine(best_class, water_prob, water_ids, other_ids, args.water_min_prob, args.water_min_area, args.water_bridge)
         Image.fromarray((mask * 255).astype(np.uint8), mode="L").save(args.out / f"{path.name}.png")
         print(f"{path.name} {mask.mean():.6f}", flush=True)
     return 0

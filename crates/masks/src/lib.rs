@@ -62,7 +62,7 @@ pub fn mask_path(mask_root: &Path, image: &Path) -> PathBuf {
 }
 
 /// The `segment` tool's arguments (ADR-0006): the classes, the frames and
-/// the output directory, then the water gating thresholds (#12).
+/// the output directory, then the water gating options (#12).
 fn segment_args(masks: &shoreline_core::config::Masks, images: &Path, raw: &Path) -> Vec<OsString> {
     vec![
         "--classes".into(),
@@ -73,6 +73,8 @@ fn segment_args(masks: &shoreline_core::config::Masks, images: &Path, raw: &Path
         masks.water_min_prob.to_string().into(),
         "--water-min-area".into(),
         masks.water_min_area.to_string().into(),
+        "--water-bridge".into(),
+        masks.water_bridge.to_string().into(),
     ]
 }
 
@@ -344,11 +346,12 @@ mod tests {
         let config = repo_config();
         let base = Masks.config(&config);
         assert_eq!(base, serde_json::to_value(&config.masks).unwrap());
-        let changes: [fn(&mut shoreline_core::config::Masks); 4] = [
+        let changes: [fn(&mut shoreline_core::config::Masks); 5] = [
             |m| m.classes.push("tree".into()),
             |m| m.dilate_px = 4,
             |m| m.water_min_prob = 0.25,
             |m| m.water_min_area = 0.1,
+            |m| m.water_bridge = 0.05,
         ];
         for change in changes {
             let mut changed = config.clone();
@@ -370,6 +373,8 @@ mod tests {
             "0.5",
             "--water-min-area",
             "0.02",
+            "--water-bridge",
+            "0.02",
         ]
         .map(OsString::from)
         .into();
@@ -382,6 +387,7 @@ mod tests {
         config.masks.classes = vec!["sea".into()];
         config.masks.water_min_prob = 0.75;
         config.masks.water_min_area = 0.1;
+        config.masks.water_bridge = 0.05;
         let args = segment_args(&config.masks, Path::new("/f/images"), Path::new("/o/raw"));
         let expected: Vec<OsString> = [
             "--classes",
@@ -392,6 +398,8 @@ mod tests {
             "0.75",
             "--water-min-area",
             "0.1",
+            "--water-bridge",
+            "0.05",
         ]
         .map(OsString::from)
         .into();
@@ -406,7 +414,7 @@ mod tests {
         config.masks.water_min_area = 1.0;
         let args = segment_args(&config.masks, Path::new("/f"), Path::new("/o"));
         assert_eq!(
-            args[4..],
+            args[4..8],
             ["--water-min-prob", "0", "--water-min-area", "1"].map(OsString::from)
         );
     }
