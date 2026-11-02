@@ -29,7 +29,6 @@ from pathlib import Path
 import numpy as np
 import torch
 from PIL import Image
-from transformers import OneFormerForUniversalSegmentation, OneFormerProcessor
 
 import regions
 
@@ -63,7 +62,8 @@ def class_scores(outputs, size, water_ids):
     masks = outputs.masks_queries_logits.sigmoid()
     scores = torch.einsum("bqc, bqhw -> bchw", classes, masks)[0].float()
     best = best_class = None
-    total = water = 0
+    total = torch.zeros(size, device=scores.device)
+    water = torch.zeros(size, device=scores.device)
     for start in range(0, scores.shape[0], CHUNK):
         chunk = scores[None, start : start + CHUNK]
         up = torch.nn.functional.interpolate(chunk, size=size, mode="bilinear", align_corners=False)[0]
@@ -86,6 +86,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--classes", required=True, help="comma-separated ADE20K label names")
     ap.add_argument("--check", action="store_true", help="validate the model and classes, then exit")
+    # The defaults repeat configs/defaults.toml for standalone runs; the masks stage always passes
+    # both flags from [masks], which is the source of truth.
     ap.add_argument("--water-min-prob", type=float, default=0.5, help="minimum water probability (default 0.5)")
     ap.add_argument("--water-min-area", type=float, default=0.02, help="minimum inland water area fraction (default 0.02)")
     ap.add_argument("images", type=Path, nargs="?")
@@ -102,6 +104,9 @@ def main() -> int:
     if not classes:
         print("segment: no classes given", file=sys.stderr)
         return 2
+    # Imported here so that test_class_scores.py can import this module with torch alone.
+    from transformers import OneFormerForUniversalSegmentation, OneFormerProcessor
+
     processor = OneFormerProcessor.from_pretrained(MODEL)
     model = OneFormerForUniversalSegmentation.from_pretrained(MODEL).eval()
     ids = sorted(i for i, label in model.config.id2label.items() if label_name(label) in classes)

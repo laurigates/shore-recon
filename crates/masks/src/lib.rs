@@ -398,6 +398,19 @@ mod tests {
         assert_eq!(args, expected);
     }
 
+    #[test]
+    fn segment_args_write_whole_thresholds_as_plain_numbers() {
+        // f64::to_string drops the ".0"; Python's float() parses "0" and "1".
+        let mut config = repo_config();
+        config.masks.water_min_prob = 0.0;
+        config.masks.water_min_area = 1.0;
+        let args = segment_args(&config.masks, Path::new("/f"), Path::new("/o"));
+        assert_eq!(
+            args[4..],
+            ["--water-min-prob", "0", "--water-min-area", "1"].map(OsString::from)
+        );
+    }
+
     /// An executable stand-in for the segment tool: records its arguments in
     /// `args.txt` and writes the raw fixture mask for every frame except those
     /// named in `skip`. Like the real tool, it has no `--version`.

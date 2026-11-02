@@ -101,6 +101,13 @@ def test_diagonal_neighbours_are_separate_components():
     np.testing.assert_array_equal(out, expected)
 
 
+def test_components_on_top_and_side_edges_are_dropped():
+    # Only the bottom row anchors a component; the top row and the side columns do not.
+    mask = grid(["##....", "......", "#....#", "#....#", "......", "......"])
+    out = regions.keep_connected(mask, 0.1)  # each component is 2 of 36 pixels
+    np.testing.assert_array_equal(out, np.zeros((6, 6), dtype=bool))
+
+
 def test_empty_array():
     out = regions.keep_connected(np.zeros((0, 0), dtype=bool), 0.02)
     assert out.shape == (0, 0)
