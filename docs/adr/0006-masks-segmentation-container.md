@@ -47,11 +47,15 @@ run does not. Every other frame is at 0.955 or above.
    (`[masks] water_min_prob`) of the summed class scores, in 4-connected regions that touch
    the bottom row or cover at least `--water-min-area` (`[masks] water_min_area`) of the image.
    Every argmax-water pixel connected to a seed is then kept, with gaps up to `--water-bridge`
-   (`[masks] water_bridge`) of the image width closed for connectivity only. Cutting by
+   (`[masks] water_bridge`) of the image width closed for connectivity only. A water region
+   whose mean water probability is at least `--water-seed-prob` (`[masks] water_seed_prob`)
+   seeds itself: distant water cut off by a dock or a treeline is confident on average
+   (0.73–0.91 on Laajasalo and Vartiosaari), the wet gravel is not (0.55 or below). Cutting by
    probability alone also dropped real water: the low-confidence band along the shore and
    water seen through a railing, which the cut separates from the main body. Wet gravel away
-   from the water has no seed and stays unmasked. `water_min_prob` and `water_min_area` at 0
-   give plain argmax; the stage passes all three after the positional arguments. The gating
+   from the water has no seed and stays unmasked. `water_min_prob` and `water_min_area` at 0,
+   or `water_seed_prob` at 0, give plain argmax; the stage passes all four after the
+   positional arguments. The gating
    lives in `regions.py` beside `segment.py` in the image.
 4. The masks stage in Rust turns these into COLMAP masks (dilation, black = ignore,
    `masks/<image>.png`), writes the review overlays, and computes the masked-fraction metrics and

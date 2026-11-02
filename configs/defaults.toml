@@ -13,6 +13,7 @@ dilate_px = 8
 water_min_prob = 0.5    # water pixels need this share of the class scores; 0 = plain argmax (#12)
 water_min_area = 0.02   # seed regions off the bottom edge need this image fraction; 0 = keep all
 water_bridge   = 0.02   # water joins a seed across gaps up to this fraction of image width (railings)
+water_seed_prob = 0.7   # a water region with this mean water probability seeds itself (distant water)
 temporal  = false
 
 [sfm]

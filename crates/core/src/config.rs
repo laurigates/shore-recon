@@ -69,6 +69,10 @@ pub struct Masks {
     /// water from the seeds over connected argmax-water pixels (#12), so water
     /// seen past a railing joins the main body.
     pub water_bridge: f64,
+    /// Smallest mean water probability at which a water region seeds itself
+    /// without touching a seed (#12): confident distant water cut off by a
+    /// dock or a treeline, unlike wet gravel.
+    pub water_seed_prob: f64,
     pub temporal: bool,
 }
 
@@ -250,6 +254,7 @@ impl Config {
             ("masks.water_min_prob", self.masks.water_min_prob),
             ("masks.water_min_area", self.masks.water_min_area),
             ("masks.water_bridge", self.masks.water_bridge),
+            ("masks.water_seed_prob", self.masks.water_seed_prob),
             ("dense.texture_headroom", self.dense.texture_headroom),
             ("video.share_max_mib", self.video.share_max_mib),
             (
@@ -312,6 +317,9 @@ impl Config {
         }
         if !(0.0..=1.0).contains(&self.masks.water_bridge) {
             return invalid("masks.water_bridge must be within [0, 1]");
+        }
+        if !(0.0..=1.0).contains(&self.masks.water_seed_prob) {
+            return invalid("masks.water_seed_prob must be within [0, 1]");
         }
         if !(self.dense.texture_headroom > 0.0 && self.dense.texture_headroom <= 1.0) {
             return invalid("dense.texture_headroom must be within (0, 1]");
@@ -636,7 +644,13 @@ mod tests {
         assert_eq!(defaults.masks.water_min_prob, 0.5);
         assert_eq!(defaults.masks.water_min_area, 0.02);
         assert_eq!(defaults.masks.water_bridge, 0.02);
-        for key in ["water_min_prob", "water_min_area", "water_bridge"] {
+        assert_eq!(defaults.masks.water_seed_prob, 0.7);
+        for key in [
+            "water_min_prob",
+            "water_min_area",
+            "water_bridge",
+            "water_seed_prob",
+        ] {
             for value in ["1.5", "-0.1", "nan"] {
                 let err = with_overrides(&format!("[masks]\n{key} = {value}\n"))
                     .unwrap_err()
