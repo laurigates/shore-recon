@@ -9,7 +9,7 @@
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -20,6 +20,8 @@ use toml::{Table, Value};
 
 use crate::config::read_table;
 use crate::error::{Error, Result};
+
+mod detached;
 
 pub const TOOLS_FILE: &str = "tools.toml";
 /// `configs/tools.toml`, built in so an installed binary needs no checkout.
@@ -64,6 +66,35 @@ pub struct Remote {
     /// Environment for the remote command, such as `APPTAINER_CACHEDIR`.
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// Consecutive failed ssh calls to the host of a detached run before it
+    /// gives up (ADR-0009, decision 6).
+    #[serde(default = "default_reconnect_attempts")]
+    pub reconnect_attempts: u32,
+    /// Delay before the first reconnect, doubled per further attempt.
+    #[serde(default = "default_reconnect_delay_secs")]
+    pub reconnect_delay_secs: u32,
+    /// Upper bound of the reconnect delay.
+    #[serde(default = "default_reconnect_max_delay_secs")]
+    pub reconnect_max_delay_secs: u32,
+    /// Interval between polls of a running remote command.
+    #[serde(default = "default_poll_secs")]
+    pub poll_secs: u32,
+}
+
+fn default_reconnect_attempts() -> u32 {
+    10
+}
+
+fn default_reconnect_delay_secs() -> u32 {
+    5
+}
+
+fn default_reconnect_max_delay_secs() -> u32 {
+    60
+}
+
+fn default_poll_secs() -> u32 {
+    5
 }
 
 /// Docker's `--user` on a remote host: the remote shell expands it to the ssh
@@ -156,6 +187,18 @@ impl Remote {
         };
         if !self.env.keys().all(|k| key_ok(k)) {
             return Err("remote env names must be [A-Za-z_][A-Za-z0-9_]*");
+        }
+        if self.reconnect_attempts < 1 {
+            return Err("remote reconnect_attempts must be at least 1");
+        }
+        if self.reconnect_delay_secs < 1 {
+            return Err("remote reconnect_delay_secs must be at least 1");
+        }
+        if self.reconnect_max_delay_secs < self.reconnect_delay_secs {
+            return Err("remote reconnect_max_delay_secs must be >= reconnect_delay_secs");
+        }
+        if self.poll_secs < 1 {
+            return Err("remote poll_secs must be at least 1");
         }
         Ok(())
     }
@@ -284,6 +327,9 @@ pub struct Invocation {
     /// Absolute directories without `..` that the tool reads or writes.
     /// Containers bind-mount each at the same path; native runs ignore them.
     pub mounts: Vec<PathBuf>,
+    /// Extra environment variables for the tool process. Native runs apply
+    /// them with `Command::env`; container runs pass `--env K=V`.
+    pub env: Vec<(String, String)>,
 }
 
 impl Invocation {
@@ -295,11 +341,17 @@ impl Invocation {
         Self {
             args: args.into_iter().map(Into::into).collect(),
             mounts: Vec::new(),
+            env: Vec::new(),
         }
     }
 
     pub fn mount(mut self, dir: impl Into<PathBuf>) -> Self {
         self.mounts.push(dir.into());
+        self
+    }
+
+    pub fn env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.env.push((key.into(), value.into()));
         self
     }
 }
@@ -323,11 +375,30 @@ impl Tool {
     /// process is the ssh call; see [`Tool::sync`] for its file transfers.
     pub fn command(&self, inv: &Invocation) -> Result<Command> {
         self.spec.validate(&self.name)?;
+        let key_ok = |k: &str| {
+            let mut chars = k.chars();
+            match chars.next() {
+                Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+                _ => return false,
+            }
+            chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        };
+        for (k, _) in &inv.env {
+            if !key_ok(k) {
+                return Err(Error::Tools(format!(
+                    "{}: env names must be [A-Za-z_][A-Za-z0-9_]*",
+                    self.name
+                )));
+            }
+        }
         let (engine, prefix, gpu_flag, bind_flag): (_, &[&str], &[&str], _) =
             match self.spec.runtime {
                 Runtime::Native => {
                     let mut cmd = Command::new(&self.spec.program);
                     cmd.args(&inv.args);
+                    for (k, v) in &inv.env {
+                        cmd.env(k, v);
+                    }
                     return Ok(cmd);
                 }
                 Runtime::Podman => (
@@ -357,6 +428,10 @@ impl Tool {
         }
         if self.spec.gpu {
             words.extend(gpu_flag.iter().map(Word::from));
+        }
+        for (k, v) in &inv.env {
+            words.push(Word::from("--env"));
+            words.push(Word::from(format!("{k}={v}")));
         }
         for dir in &inv.mounts {
             let mut bind = match remote {
@@ -499,7 +574,9 @@ impl Tool {
         if let Some(dir) = log.parent() {
             std::fs::create_dir_all(dir).map_err(io(dir))?;
         }
-        let file = File::create(log).map_err(io(log))?;
+        File::create(log).map_err(io(log))?;
+        // Appending, as the detached remote run appends to the same log.
+        let file = OpenOptions::new().append(true).open(log).map_err(io(log))?;
         let step = |cmd: &mut Command| -> Result<()> {
             let argv = self::argv(cmd);
             let mut stdout = file.try_clone().map_err(io(log))?;
@@ -530,7 +607,8 @@ impl Tool {
             Some(mut sync) => {
                 step(&mut sync.prepare)?;
                 sync.push.iter_mut().try_for_each(&step)?;
-                step(&mut cmd)?;
+                let remote = self.spec.remote.as_ref().expect("sync implies remote");
+                detached::run(&self.name, remote, &cmd, log)?;
                 sync.pull.iter_mut().try_for_each(&step)?;
             }
         }
@@ -744,6 +822,10 @@ mod tests {
             host: "gpu".into(),
             root: "/srv/mirror".into(),
             env: BTreeMap::from([("APPTAINER_CACHEDIR".into(), "/srv/cache".into())]),
+            reconnect_attempts: 10,
+            reconnect_delay_secs: 5,
+            reconnect_max_delay_secs: 60,
+            poll_secs: 5,
         });
         tool
     }
@@ -895,6 +977,50 @@ mod tests {
     }
 
     #[test]
+    fn remote_reconnect_keys() {
+        let base = format!(
+            "[x]\nruntime = \"apptainer\"\nprogram = \"x\"\nimage = \"{IMAGE}\"\n\
+             [x.remote]\nhost = \"h\"\nroot = \"/r\"\n"
+        );
+        let remote = |extra: &str| {
+            let t = tools(&format!("{base}{extra}")).unwrap();
+            let r = t.get("x").unwrap().spec.remote.unwrap();
+            (
+                r.reconnect_attempts,
+                r.reconnect_delay_secs,
+                r.reconnect_max_delay_secs,
+                r.poll_secs,
+            )
+        };
+        assert_eq!(remote(""), (10, 5, 60, 5));
+        assert_eq!(
+            remote(
+                "reconnect_attempts = 3\nreconnect_delay_secs = 2\n\
+                 reconnect_max_delay_secs = 2\npoll_secs = 1\n"
+            ),
+            (3, 2, 2, 1)
+        );
+        for (extra, needle) in [
+            (
+                "reconnect_attempts = 0",
+                "reconnect_attempts must be at least 1",
+            ),
+            (
+                "reconnect_delay_secs = 0",
+                "reconnect_delay_secs must be at least 1",
+            ),
+            ("poll_secs = 0", "poll_secs must be at least 1"),
+            (
+                "reconnect_delay_secs = 10\nreconnect_max_delay_secs = 9",
+                "reconnect_max_delay_secs must be >= reconnect_delay_secs",
+            ),
+        ] {
+            let err = tools_err(&format!("{base}{extra}\n"));
+            assert!(err.contains(needle), "{extra:?}: {err}");
+        }
+    }
+
+    #[test]
     fn tool_records_without_a_host_still_parse() {
         let json = r#"{"tool":"x","runtime":"native","image":null,"argv":["x"],"seconds":1.0,"log":"x.log"}"#;
         let rec: ToolRecord = serde_json::from_str(json).unwrap();
@@ -969,6 +1095,103 @@ mod tests {
             let err = tool.command(&Invocation::default().mount(bad)).unwrap_err();
             assert!(matches!(&err, Error::Tools(m) if m.contains(bad)), "{err}");
         }
+    }
+
+    #[test]
+    fn native_env_is_applied_without_changing_argv() {
+        let inv = Invocation::new(["x"]).env("RUST_LOG", "info");
+        let cmd = native("ffmpeg").command(&inv).unwrap();
+        assert_eq!(argv(&cmd), ["ffmpeg", "x"]);
+        assert!(
+            cmd.get_envs().any(|(k, v)| {
+                k == "RUST_LOG" && v.map(|x| x.to_string_lossy() == "info").unwrap_or(false)
+            }),
+            "{:?}",
+            cmd.get_envs().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn docker_argv_includes_invocation_env() {
+        let inv = Invocation::new(["help"]).env("RUST_LOG", "info");
+        let cmd = container(Runtime::Docker, false).command(&inv).unwrap();
+        let args = argv(&cmd);
+        assert!(
+            args.windows(2).any(|w| w == ["--env", "RUST_LOG=info"]),
+            "{args:?}"
+        );
+    }
+
+    #[test]
+    fn remote_argv_includes_invocation_env() {
+        let tool = remote(container(Runtime::Docker, false));
+        let cmd = tool
+            .command(&Invocation::new(["help"]).env("RUST_LOG", "info"))
+            .unwrap();
+        let line = argv(&cmd).pop().unwrap();
+        assert!(line.contains("'--env' 'RUST_LOG=info'"), "{line}");
+    }
+
+    #[test]
+    fn apptainer_argv_places_invocation_env_before_the_image() {
+        let inv = Invocation::new(["help"])
+            .mount("/work/a")
+            .env("RUST_LOG", "info");
+        let cmd = container(Runtime::Apptainer, true).command(&inv).unwrap();
+        let docker_ref = format!("docker://{IMAGE}");
+        assert_eq!(
+            argv(&cmd),
+            [
+                "apptainer",
+                "exec",
+                "--nv",
+                "--env",
+                "RUST_LOG=info",
+                "--bind",
+                "/work/a:/work/a",
+                &docker_ref,
+                "colmap",
+                "help",
+            ]
+        );
+    }
+
+    #[test]
+    fn podman_argv_includes_invocation_env() {
+        let inv = Invocation::new(["help"]).env("RUST_LOG", "info");
+        let cmd = container(Runtime::Podman, true).command(&inv).unwrap();
+        assert_eq!(
+            argv(&cmd),
+            [
+                "podman",
+                "run",
+                "--rm",
+                "--device",
+                "nvidia.com/gpu=all",
+                "--env",
+                "RUST_LOG=info",
+                IMAGE,
+                "colmap",
+                "help",
+            ]
+        );
+    }
+
+    #[test]
+    fn remote_apptainer_argv_includes_invocation_env() {
+        let inv = Invocation::new(["help"])
+            .mount("/work/a")
+            .env("RUST_LOG", "info");
+        let cmd = remote(container(Runtime::Apptainer, true))
+            .command(&inv)
+            .unwrap();
+        let remote_cmd = format!(
+            "'env' 'APPTAINER_CACHEDIR=/srv/cache' 'apptainer' 'exec' '--nv' '--env' 'RUST_LOG=info' '--bind' '/srv/mirror/work/a:/work/a' 'docker://{IMAGE}' 'colmap' 'help'"
+        );
+        assert_eq!(
+            argv(&cmd),
+            ["ssh", "-o", "BatchMode=yes", "gpu", "--", &remote_cmd]
+        );
     }
 
     #[test]
@@ -1232,6 +1455,10 @@ mod tests {
                 env: std::env::var("SHORELINE_TEST_REMOTE_CACHE")
                     .map(|c| BTreeMap::from([("APPTAINER_CACHEDIR".to_owned(), c)]))
                     .unwrap_or_default(),
+                reconnect_attempts: 10,
+                reconnect_delay_secs: 5,
+                reconnect_max_delay_secs: 60,
+                poll_secs: 5,
             });
             let dir = tempfile::tempdir().unwrap();
             let work = dir.path().canonicalize().unwrap();

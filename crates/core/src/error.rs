@@ -50,4 +50,32 @@ pub enum Error {
         status: std::process::ExitStatus,
         log: PathBuf,
     },
+    /// The remote command of a detached run (ADR-0009, decision 6) exited non-zero.
+    #[error("{tool} failed on the remote host (exit {code}); see {log}")]
+    RemoteToolFailed {
+        tool: String,
+        code: i32,
+        log: PathBuf,
+    },
+    /// Reconnecting to the host of a detached run gave up; the command may live on.
+    #[error(
+        "ssh connection to {host} was lost after {attempts} reconnect attempts; {tool} may still \
+         be running on the host in {run_dir} (see out.log and status there); local log {log}"
+    )]
+    RemoteLost {
+        tool: String,
+        host: String,
+        run_dir: PathBuf,
+        attempts: u32,
+        log: PathBuf,
+    },
+    /// A detached run that can no longer finish: its run directory is gone, or
+    /// its command ended without recording an exit code.
+    #[error("{tool} on {host}: {message}; see {log}")]
+    RemoteRun {
+        tool: String,
+        host: String,
+        message: String,
+        log: PathBuf,
+    },
 }
